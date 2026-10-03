@@ -777,6 +777,8 @@ label.btn,
                 <button id="addColumnBtn" class="btn">Add data column</button>
                 <button id="removeColumnBtn" class="btn">Remove custom column</button>
               </div>
+              <div class="clean-section-label">Species</div>
+              <button id="manageCustomSpeciesBtn" class="btn">Manage custom species</button>
               <div class="clean-section-label">Storage</div>
               <button id="budClearLocalBtn" class="btn warn">Clear stored projects</button>
               <div class="clean-muted" style="margin-top:8px">Only use this after backing up any live projects.</div>
@@ -1261,9 +1263,17 @@ function normalizeImportedProperties(raw){
 }
 function getFeatureById(id){ const p=currentProject(); return p ? p.features.find(f=>f.id===id) : null; }
 
+function isValidDbhField(text){
+  const raw=String(text||'').trim();
+  if(!raw) return true;
+  if(!/^[0-9.,;\/\s]+$/.test(raw)) return false;
+  const tokens=raw.split(/[,;\/\s]+/).filter(Boolean);
+  return tokens.length>0 && tokens.every(v=>/^\d+(?:\.\d+)?$/.test(v) && Number(v)>0);
+}
 function parseDbhField(text){
-  const raw=String(text||'').trim(); if(!raw) return [];
-  return raw.split(/[,;\/\s]+/).map(v=>Number(String(v).replace(/[^0-9.\-]/g,''))).filter(v=>Number.isFinite(v)&&v>0);
+  const raw=String(text||'').trim();
+  if(!raw || !isValidDbhField(raw)) return [];
+  return raw.split(/[,;\/\s]+/).filter(Boolean).map(Number);
 }
 function effectiveDbhMm(props){
   const parts=parseDbhField(props.stem_diameter);
@@ -1511,7 +1521,11 @@ function blankProject(name){
 }
 
 async function refreshProjects(selectId){
-  state.projects=(await listProjectsDb()).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+  state.projects=(await listProjectsDb());
+  for(const project of state.projects){
+    if(repairProjectSchema(project)) await putProjectDb(project);
+  }
+  state.projects.sort((a,b)=>String(a.name).localeCompare(String(b.name)));
   if(selectId) state.currentProjectId=selectId;
   const visible = state.projects.filter(p=>!p.archived);
   if(!state.projects.length){ state.currentProjectId=null; }
@@ -1540,6 +1554,7 @@ function renderProjectList(){
       <div class="project-actions">
         <button class="btn ${p.id===state.currentProjectId?'primary':''}" data-project-select="${p.id}">${p.id===state.currentProjectId?'Selected':'Select'}</button>
         <button class="btn" data-project-open="${p.id}">Open</button>
+        <button class="btn warn" data-project-delete="${p.id}">Delete</button>
       </div>
     </div>`;
   }).join('');
@@ -1548,6 +1563,16 @@ function renderProjectList(){
   box.innerHTML = out;
   box.querySelectorAll('[data-project-select]').forEach(btn=>btn.onclick=()=>{state.currentProjectId=btn.dataset.projectSelect; renderProjectList(); renderCurrentProjectSummary(); renderProjectPill(); afterProjectOpenedUi(); showNotice('Project selected.');});
   box.querySelectorAll('[data-project-open]').forEach(btn=>btn.onclick=()=>{state.currentProjectId=btn.dataset.projectOpen; renderProjectList(); renderCurrentProjectSummary(); renderProjectPill(); afterProjectOpenedUi(); showMap();});
+  box.querySelectorAll('[data-project-delete]').forEach(btn=>btn.onclick=async ()=>{
+    const id=btn.dataset.projectDelete;
+    const project=state.projects.find(p=>p.id===id);
+    if(!project) return;
+    if(!confirm(`Delete ${project.name} from Bud&Leaf on this device?\n\nLinked project files will not be deleted.`)) return;
+    await deleteProjectDb(id);
+    if(state.currentProjectId===id) state.currentProjectId=null;
+    await refreshProjects();
+    showNotice('Project deleted from this device.');
+  });
 }
 
 function renderCurrentProjectSummary(){
@@ -2151,6 +2176,7 @@ function saveCustomSpeciesOption(value){
   const name=normaliseSpeciesName(value);
   if(!name || name.length<2) return false;
   if(name.toLowerCase()==='other / record in notes') return false;
+  if(name.toLowerCase()==='yggdrasil' || name.toLowerCase()==='yggdrasil — world tree 🌳') return false;
   const builtIn=SPECIES_OPTIONS.some(v=>v.toLowerCase()===name.toLowerCase());
   const custom=getCustomSpeciesOptions();
   if(builtIn || custom.some(v=>v.toLowerCase()===name.toLowerCase())) return false;
@@ -2159,10 +2185,39 @@ function saveCustomSpeciesOption(value){
   try{ localStorage.setItem(BUD_CUSTOM_SPECIES_KEY, JSON.stringify(custom)); }catch(e){}
   return true;
 }
+function setCustomSpeciesOptions(values){
+  const clean=Array.from(new Set((values||[]).map(normaliseSpeciesName).filter(Boolean))).sort((a,b)=>a.localeCompare(b));
+  try{ localStorage.setItem(BUD_CUSTOM_SPECIES_KEY, JSON.stringify(clean)); }catch(e){}
+}
 function maybeSaveEnteredSpecies(value){
   const name=normaliseSpeciesName(value);
-  if(!name) return;
+  if(!name) return '';
+  if(name.toLowerCase()==='yggdrasil' || name.toLowerCase()==='yggdrasil — world tree 🌳'){
+    showNotice('Yggdrasil — World Tree 🌳');
+    return 'Yggdrasil — World Tree 🌳';
+  }
   if(saveCustomSpeciesOption(name)) showNotice('Species added to your list.');
+  return name;
+}
+function manageCustomSpecies(){
+  const custom=getCustomSpeciesOptions();
+  if(!custom.length){ alert('No custom species saved yet.'); return; }
+  const pick=prompt('Custom species:\n\n'+custom.map((v,i)=>`${i+1}. ${v}`).join('\n')+'\n\nEnter the number to rename or delete:');
+  if(pick===null) return;
+  const idx=Number(pick)-1;
+  if(!Number.isInteger(idx) || idx<0 || idx>=custom.length){ alert('Choose a number from the list.'); return; }
+  const oldName=custom[idx];
+  const next=prompt(`Rename "${oldName}".\n\nEnter a new name, or clear the box to delete it.`,oldName);
+  if(next===null) return;
+  const name=normaliseSpeciesName(next);
+  if(!name){
+    if(!confirm(`Delete "${oldName}" from your custom species list?`)) return;
+    custom.splice(idx,1); setCustomSpeciesOptions(custom); showNotice('Custom species removed.'); return;
+  }
+  if(SPECIES_OPTIONS.some(v=>v.toLowerCase()===name.toLowerCase()) || custom.some((v,i)=>i!==idx && v.toLowerCase()===name.toLowerCase())){
+    alert('That species is already in the list.'); return;
+  }
+  custom[idx]=name; setCustomSpeciesOptions(custom); showNotice('Custom species renamed.');
 }
 function renderSpeciesDatalist(id){
   return `<datalist id="${id}">${getAllSpeciesOptions().map(opt=>`<option value="${escapeHtml(opt)}"></option>`).join('')}</datalist>`;
@@ -2211,12 +2266,12 @@ function renderInput(field, value, props){
   if(field.key==='stem_diameter'){
     return `<div class="field"><label>${label}</label><div class="row"><input id="dbhFieldInput" class="input" data-field-key="${key}" type="text" value="${escapeHtml(val)}" ${ro?'readonly':''} style="flex:1" /><button type="button" class="btn" id="addDbhStemBtn">Add stem</button></div><div class="small">Enter one DBH or multiple stems, e.g. 220, 180, 160.</div></div>`;
   }
-  if(field.type==='photos'){
+  if(field.key==='photos' || field.type==='photos'){
     const photos=Array.isArray(props.photos)?props.photos:[];
-    return `<div class="field" style="grid-column:1 / -1"><label>${label}</label><label class="btn filebtn">Add photos<input id="photoInput" type="file" accept="image/*" capture="environment" multiple /></label><div class="small" style="margin-top:6px">Photos are stored inside the project on this device, so keep an eye on file size for very large jobs.</div><div class="photo-grid">${photos.map((ph,i)=>`<div class="photo-card"><img src="${ph.data}" alt="Photo ${i+1}" data-photo-open="${i}" /><button type="button" data-photo-delete="${i}">×</button><div class="photo-caption">${escapeHtml(ph.name||('Photo '+(i+1)))}</div></div>`).join('')}</div></div>`;
+    return `<div class="field" style="grid-column:1 / -1"><label>${label}</label><div class="row"><button type="button" class="btn primary" id="takePhotoBtn">📷 Take photo</button><button type="button" class="btn" id="choosePhotosBtn">🖼 Choose photo(s)</button></div><input id="photoCameraInput" class="hidden" type="file" accept="image/*" capture="environment" /><input id="photoLibraryInput" class="hidden" type="file" accept="image/*" multiple /><div class="photo-grid">${photos.map((ph,i)=>`<div class="photo-card"><img src="${ph.data}" alt="Photo ${i+1}" data-photo-open="${i}" /><button type="button" data-photo-delete="${i}">×</button><div class="photo-caption">${escapeHtml(ph.name||('Photo '+(i+1)))}</div></div>`).join('')}</div></div>`;
   }
   if(field.type==='textarea') return `<div class="field"><label>${label}</label><textarea data-field-key="${key}" ${ro?'readonly':''}>${escapeHtml(val)}</textarea></div>`;
-  if(field.type==='condition'){
+  if(field.type==='condition' || field.key==='structural_condition' || field.key==='physiological_condition'){
     const options=conditionOptionsForType(props.feature_type);
     return `<div class="field"><label>${label}</label><select data-field-key="${key}" ${ro?'disabled':''}>${options.map(opt=>`<option value="${escapeHtml(opt)}" ${String(opt)===val?'selected':''}>${escapeHtml(opt)}</option>`).join('')}</select></div>`;
   }
@@ -2280,8 +2335,18 @@ function renderFeatureSheet(feature){
   root.querySelectorAll('[data-field-key]').forEach(el=>{
     const saveHandler = async ()=>{
       const key = el.dataset.fieldKey;
-      props[key] = el.value;
-      if(key==='species') maybeSaveEnteredSpecies(el.value);
+      if(key==='stem_diameter' && !isValidDbhField(el.value)){
+        alert('DBH must contain numbers only. For multiple stems use commas, e.g. 220, 180, 160.');
+        el.value=props[key]||'';
+        return;
+      }
+      if(key==='species'){
+        const speciesValue=maybeSaveEnteredSpecies(el.value);
+        el.value=speciesValue;
+        props[key]=speciesValue;
+      }else{
+        props[key] = el.value;
+      }
       await persist();
     };
     el.addEventListener('change', saveHandler);
@@ -2294,7 +2359,7 @@ function renderFeatureSheet(feature){
 
   root.querySelectorAll('[data-species-select]').forEach(el=>{
     const saveSpecies = async ()=>{
-      maybeSaveEnteredSpecies(el.value);
+      el.value=maybeSaveEnteredSpecies(el.value);
       props.species = serialiseSpeciesList(currentSpeciesValues());
       await persist();
     };
@@ -2314,7 +2379,7 @@ function renderFeatureSheet(feature){
   function bindSpeciesRow(row){
     const input = row.querySelector('[data-species-select]');
     if(input){
-      const saveSpecies = async ()=>{ maybeSaveEnteredSpecies(input.value); props.species = serialiseSpeciesList(currentSpeciesValues()); await persist(); };
+      const saveSpecies = async ()=>{ input.value=maybeSaveEnteredSpecies(input.value); props.species = serialiseSpeciesList(currentSpeciesValues()); await persist(); };
       input.addEventListener('change', saveSpecies);
       input.addEventListener('blur', saveSpecies);
     }
@@ -2349,21 +2414,31 @@ function renderFeatureSheet(feature){
     };
   }
 
-  const photoInput = $('photoInput');
-  if(photoInput){
-    photoInput.onchange = async (e)=>{
-      const files = Array.from(e.target.files || []);
-      props.photos = Array.isArray(props.photos) ? props.photos : [];
-      for(const file of files){
-        const photo = await compressImageFile(file, 1600, 0.82);
-        props.photos.push(photo);
-      }
-      await saveCurrentProject();
-      rebuildMap();
-      openFeatureSheet(feature.id);
-      const synced = await syncBudToLinkedFolderIfAvailable(`${files.length} photo(s) saved to photos folder.`);
-      if(!synced) showNotice(`${files.length} photo(s) saved inside Bud&Leaf. Use Sync project folder to write photos/.`);
-    };
+  async function addPhotoFiles(fileList){
+    const files=Array.from(fileList||[]);
+    if(!files.length) return;
+    props.photos=Array.isArray(props.photos)?props.photos:[];
+    for(const file of files){
+      const photo=await compressImageFile(file,1600,0.82);
+      props.photos.push(photo);
+    }
+    await saveCurrentProject();
+    rebuildMap();
+    openFeatureSheet(feature.id);
+    const synced=await syncBudToLinkedFolderIfAvailable(`${files.length} photo(s) saved to photos folder.`);
+    if(!synced) showNotice(`${files.length} photo(s) saved inside Bud&Leaf.`);
+  }
+  const photoCameraInput=$('photoCameraInput');
+  const photoLibraryInput=$('photoLibraryInput');
+  const takePhotoBtn=$('takePhotoBtn');
+  const choosePhotosBtn=$('choosePhotosBtn');
+  if(takePhotoBtn && photoCameraInput){
+    takePhotoBtn.onclick=()=>{ photoCameraInput.value=''; photoCameraInput.click(); };
+    photoCameraInput.onchange=async e=>{ await addPhotoFiles(e.target.files); e.target.value=''; };
+  }
+  if(choosePhotosBtn && photoLibraryInput){
+    choosePhotosBtn.onclick=()=>{ photoLibraryInput.value=''; photoLibraryInput.click(); };
+    photoLibraryInput.onchange=async e=>{ await addPhotoFiles(e.target.files); e.target.value=''; };
   }
   root.querySelectorAll('[data-photo-open]').forEach(img=>{
     img.onclick = ()=>{
@@ -2575,6 +2650,14 @@ function bindFeatureLayer(layer, featureId){
     try{
       if(typeof L !== 'undefined' && L.DomEvent && ev) L.DomEvent.stop(ev);
     }catch(e){}
+    if(state.stemPlotter && ev && ev.latlng){
+      const now=Date.now();
+      if(!state._lastStemTapAt || now-state._lastStemTapAt>450){
+        state._lastStemTapAt=now;
+        addStemPointAtLatLng(ev.latlng);
+      }
+      return;
+    }
     const hits = pickableFeaturesAtLatLng(ev && ev.latlng ? ev.latlng : null);
     if(hits.length > 1){
       openFeaturePicker(hits);
@@ -3336,30 +3419,21 @@ function smoothedCanopyPolygonFromFeature(feature){
   const g = feature.geometry;
   if(!g || g.type !== 'Point' || !Array.isArray(g.coordinates)) return null;
   const p = feature.properties || {};
-  const n = Number(p.canopy_n||0), e = Number(p.canopy_e||0), s = Number(p.canopy_s||0), w = Number(p.canopy_w||0);
+  const clean=v=>{ const n=Number(v); return Number.isFinite(n)&&n>=0?n:0; };
+  const n=clean(p.canopy_n), e=clean(p.canopy_e), s=clean(p.canopy_s), w=clean(p.canopy_w);
   if(!(n||e||s||w)) return null;
   const lat = g.coordinates[1], lng = g.coordinates[0];
   const dLat = m => m/111320;
   const dLng = m => m/(111320*Math.cos(lat*Math.PI/180));
-  const radiusAt = deg => {
-    const t = ((deg % 360) + 360) % 360;
-    if(t < 90){
-      const k = t/90; return n*(1-k) + e*k;
-    } else if(t < 180){
-      const k = (t-90)/90; return e*(1-k) + s*k;
-    } else if(t < 270){
-      const k = (t-180)/90; return s*(1-k) + w*k;
-    } else {
-      const k = (t-270)/90; return w*(1-k) + n*k;
-    }
-  };
   const coords = [];
-  for(let deg=0; deg<=360; deg+=10){
-    const rad = deg * Math.PI / 180;
-    const r = radiusAt(deg);
-    const north = Math.cos(rad) * r;
-    const east = Math.sin(rad) * r;
-    coords.push([lng + dLng(east), lat + dLat(north)]);
+  for(let deg=0; deg<=360; deg+=5){
+    const rad=deg*Math.PI/180;
+    let north=0, east=0;
+    if(deg<=90){ north=n*Math.cos(rad); east=e*Math.sin(rad); }
+    else if(deg<=180){ north=s*Math.cos(rad); east=e*Math.sin(rad); }
+    else if(deg<=270){ north=s*Math.cos(rad); east=w*Math.sin(rad); }
+    else{ north=n*Math.cos(rad); east=w*Math.sin(rad); }
+    coords.push([lng+dLng(east),lat+dLat(north)]);
   }
   return {type:'Feature', properties:{}, geometry:{type:'Polygon', coordinates:[coords]}};
 }
@@ -3914,13 +3988,12 @@ function budCsvTextForHeaders(project, headers){
 
 function exportCSV(){
   const p=ensureProject(); if(!p) return;
-  const headers=budAllExportHeaders(p);
-  downloadText(`${slugify(p.name)}_${isSafetyMode(p)?'tree_safety':'bs5837'}_all_fields.csv`, budCsvTextForHeaders(p,headers), 'text/csv');
+  downloadText(`${slugify(p.name)}_tree_survey.csv`, budScheduleCsvText(p), 'text/csv');
 }
 function backupJSON(){
   const p=ensureProject(); if(!p) return;
   const payload=currentBudProjectPackage()||p;
-  downloadText(`${budProjectFileBase(p)}.bud`,JSON.stringify(payload,null,2),'application/json');
+  downloadText(`${budProjectFileBase(p)}.bud`,JSON.stringify(payload,null,2),'application/octet-stream');
   showNotice('Bud&Leaf project file saved.');
 }
 function csvCell(v){ return `"${String(v).replace(/"/g,'""')}"`; }
@@ -4083,18 +4156,49 @@ async function importGeoJSONFile(file){
   fitMapToProject();
   showNotice('GeoJSON imported into current project.');
 }
+function coreSchemaDefinition(key){
+  return defaultSchema.find(f=>f.key===key) || null;
+}
+function repairProjectSchema(project){
+  if(!project) return false;
+  const current=Array.isArray(project.schema)?project.schema:[];
+  const seen=new Set();
+  const repaired=[];
+  current.forEach(field=>{
+    if(!field || !field.key) return;
+    const base=coreSchemaDefinition(field.key);
+    const out=Object.assign({},field);
+    if(base){
+      out.type=base.type;
+      out.readonly=!!base.readonly;
+      if(Array.isArray(base.options)) out.options=base.options.slice();
+    }
+    repaired.push(out);
+    seen.add(out.key);
+  });
+  defaultSchema.forEach(base=>{
+    if(!seen.has(base.key)) repaired.push(JSON.parse(JSON.stringify(base)));
+  });
+  const before=JSON.stringify(project.schema||[]);
+  const after=JSON.stringify(repaired);
+  if(before!==after){ project.schema=repaired; return true; }
+  return false;
+}
 function mapSchemaField(def){
   const name=String(def.name||def.key||'').trim();
   const label=def.label || name;
-  let type='text';
-  if(def.type==='textarea') type='textarea';
-  else if(def.type==='select') type=(/condition/i.test(name) ? 'condition' : 'select');
-  else type='text';
-  const field={key:name,label,type,readonly:def.editable===false};
-  if(def.options && Array.isArray(def.options)) field.options=def.options;
-  if(def.options_source){
-    field.options_source=def.options_source;
+  const base=coreSchemaDefinition(name);
+  let type=base ? base.type : 'text';
+  if(!base){
+    if(def.type==='textarea') type='textarea';
+    else if(def.type==='condition') type='condition';
+    else if(def.type==='photos') type='photos';
+    else if(def.type==='select') type=(/condition/i.test(name) ? 'condition' : 'select');
   }
+  const field={key:name,label,type,readonly:base ? !!base.readonly : (def.readonly===true || def.editable===false)};
+  if(base && Array.isArray(base.options)) field.options=base.options.slice();
+  else if(def.options && Array.isArray(def.options)) field.options=def.options;
+  if(def.options_source) field.options_source=def.options_source;
   return field;
 }
 
@@ -5368,6 +5472,7 @@ function wireUi(){
   if($('budAutoSaveToggle')) $('budAutoSaveToggle').onchange=e=>setBudAutoSaveEnabled(e.target.checked);
   if($('budSaveNowBtn')) $('budSaveNowBtn').onclick=manualSaveBudProject;
   if($('budClearLocalBtn')) $('budClearLocalBtn').onclick=clearBudLocalData;
+  if($('manageCustomSpeciesBtn')) $('manageCustomSpeciesBtn').onclick=manageCustomSpecies;
   document.querySelectorAll('[data-bud-home-tab]').forEach(btn=>btn.addEventListener('click',()=>showBudHomeTab(btn.dataset.budHomeTab)));
   if($('setupStartNewProjectBtn')) $('setupStartNewProjectBtn').onclick=beginNewProjectSetup;
   if($('setupOpenExistingProjectBtn')) $('setupOpenExistingProjectBtn').onclick=openExistingProjectPanel;
