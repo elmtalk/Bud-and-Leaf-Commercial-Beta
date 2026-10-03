@@ -1,30 +1,95 @@
-const CACHE_NAME='bud-leaf-pwa-0-10-32-rc2l-aug2026-v1';
-const APP_SHELL=['./','./index.html','./manifest.webmanifest','./icon-72.png','./icon-96.png','./icon-128.png','./icon-144.png','./icon-152.png','./icon-180.png','./icon-192.png','./icon-256.png','./icon-384.png','./icon-512.png'];
-self.addEventListener('install',event=>{
-  event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(APP_SHELL)));
-  self.skipWaiting();
+const CACHE_NAME = 'bud-leaf-r2d2-v4';
+const CORE_FILES = [
+  './index.html',
+  './manifest.webmanifest'
+];
+
+self.addEventListener('install', function (event) {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(function (cache) {
+        return Promise.all(
+          CORE_FILES.map(function (url) {
+            return fetch(url, { cache: 'reload' })
+              .then(function (response) {
+                if (response && response.ok) {
+                  return cache.put(url, response.clone());
+                }
+              })
+              .catch(function () {
+                return null;
+              });
+          })
+        );
+      })
+      .then(function () {
+        return self.skipWaiting();
+      })
+  );
 });
-self.addEventListener('activate',event=>{
-  event.waitUntil(caches.keys().then(keys=>Promise.all(keys.map(key=>key!==CACHE_NAME?caches.delete(key):null))));
-  self.clients.claim();
+
+self.addEventListener('activate', function (event) {
+  event.waitUntil(
+    caches.keys()
+      .then(function (keys) {
+        return Promise.all(
+          keys
+            .filter(function (key) {
+              return key !== CACHE_NAME;
+            })
+            .map(function (key) {
+              return caches.delete(key);
+            })
+        );
+      })
+      .then(function () {
+        return self.clients.claim();
+      })
+  );
 });
-self.addEventListener('fetch',event=>{
-  if(event.request.method!=='GET') return;
-  const request=event.request;
-  event.respondWith((async()=>{
-    const cached=await caches.match(request,{ignoreSearch:true});
-    if(cached) return cached;
-    try{
-      const response=await fetch(request);
-      const copy=response.clone();
-      caches.open(CACHE_NAME).then(cache=>cache.put(request,copy)).catch(()=>{});
-      return response;
-    }catch(err){
-      if(request.mode==='navigate' || (request.headers.get('accept')||'').includes('text/html')){
-        const cache=await caches.open(CACHE_NAME);
-        return (await cache.match('./index.html')) || Response.error();
-      }
-      return Response.error();
-    }
-  })());
+
+self.addEventListener('fetch', function (event) {
+  var request = event.request;
+
+  if (request.method !== 'GET') {
+    return;
+  }
+
+  var url = new URL(request.url);
+
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  event.respondWith(
+    fetch(request)
+      .then(function (response) {
+        if (response && response.ok) {
+          var copy = response.clone();
+          caches.open(CACHE_NAME)
+            .then(function (cache) {
+              return cache.put(request, copy);
+            })
+            .catch(function () {});
+        }
+        return response;
+      })
+      .catch(function () {
+        return caches.match(request)
+          .then(function (cached) {
+            if (cached) {
+              return cached;
+            }
+
+            if (request.mode === 'navigate') {
+              return caches.match('./index.html')
+                .then(function (fallback) {
+                  return fallback || Response.error();
+                });
+            }
+
+            return Response.error();
+          });
+      })
+  );
 });
