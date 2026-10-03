@@ -779,6 +779,7 @@ label.btn,
               </div>
               <div class="clean-section-label">Species</div>
               <button id="manageCustomSpeciesBtn" class="btn">Manage custom species</button>
+              <div id="customSpeciesManagerList" class="clean-muted hidden" style="margin-top:8px"></div>
               <div class="clean-section-label">Storage</div>
               <button id="budClearLocalBtn" class="btn warn">Clear stored projects</button>
               <div class="clean-muted" style="margin-top:8px">Only use this after backing up any live projects.</div>
@@ -1234,7 +1235,14 @@ function ensureProject(){
 }
 function projectCounts(project){
   const c={T:0,G:0,H:0,W:0,A:0,B:0,C:0,U:0};
-  (project.features||[]).forEach(f=>{c[f.properties.feature_type]=(c[f.properties.feature_type]||0)+1; c[f.properties.category]=(c[f.properties.category]||0)+1;});
+  (project.features||[]).forEach(f=>{
+    const props=f.properties||{};
+    const type=String(props.feature_type||'').toUpperCase();
+    if(Object.prototype.hasOwnProperty.call(c,type)) c[type]=(c[type]||0)+1;
+    const category=String(props.category||'').trim().toUpperCase();
+    const base=category.charAt(0);
+    if(['A','B','C','U'].includes(base)) c[base]=(c[base]||0)+1;
+  });
   return c;
 }
 function typeWord(code){return ({T:'Individual tree',G:'Group',H:'Hedge',W:'Woodland'})[code]||code}
@@ -2199,25 +2207,50 @@ function maybeSaveEnteredSpecies(value){
   if(saveCustomSpeciesOption(name)) showNotice('Species added to your list.');
   return name;
 }
-function manageCustomSpecies(){
+function renderCustomSpeciesManager(){
+  const box=$('customSpeciesManagerList');
+  if(!box) return;
   const custom=getCustomSpeciesOptions();
-  if(!custom.length){ alert('No custom species saved yet.'); return; }
-  const pick=prompt('Custom species:\n\n'+custom.map((v,i)=>`${i+1}. ${v}`).join('\n')+'\n\nEnter the number to rename or delete:');
-  if(pick===null) return;
-  const idx=Number(pick)-1;
-  if(!Number.isInteger(idx) || idx<0 || idx>=custom.length){ alert('Choose a number from the list.'); return; }
-  const oldName=custom[idx];
-  const next=prompt(`Rename "${oldName}".\n\nEnter a new name, or clear the box to delete it.`,oldName);
-  if(next===null) return;
-  const name=normaliseSpeciesName(next);
-  if(!name){
-    if(!confirm(`Delete "${oldName}" from your custom species list?`)) return;
-    custom.splice(idx,1); setCustomSpeciesOptions(custom); showNotice('Custom species removed.'); return;
+  box.classList.remove('hidden');
+  if(!custom.length){
+    box.innerHTML='<div class="small">No custom species saved.</div>';
+    return;
   }
-  if(SPECIES_OPTIONS.some(v=>v.toLowerCase()===name.toLowerCase()) || custom.some((v,i)=>i!==idx && v.toLowerCase()===name.toLowerCase())){
-    alert('That species is already in the list.'); return;
-  }
-  custom[idx]=name; setCustomSpeciesOptions(custom); showNotice('Custom species renamed.');
+  box.innerHTML=custom.map((name,i)=>`<div class="row" style="align-items:center;margin:6px 0"><span style="flex:1;min-width:140px">${escapeHtml(name)}</span><button type="button" class="btn" data-custom-species-rename="${i}">Rename</button><button type="button" class="btn warn" data-custom-species-delete="${i}">Delete</button></div>`).join('');
+  box.querySelectorAll('[data-custom-species-delete]').forEach(btn=>btn.onclick=()=>{
+    const idx=Number(btn.dataset.customSpeciesDelete);
+    const list=getCustomSpeciesOptions();
+    const name=list[idx];
+    if(name===undefined) return;
+    if(!confirm(`Delete "${name}" from your custom species list?`)) return;
+    list.splice(idx,1);
+    setCustomSpeciesOptions(list);
+    renderCustomSpeciesManager();
+    showNotice('Custom species removed. Existing survey records are unchanged.');
+  });
+  box.querySelectorAll('[data-custom-species-rename]').forEach(btn=>btn.onclick=()=>{
+    const idx=Number(btn.dataset.customSpeciesRename);
+    const list=getCustomSpeciesOptions();
+    const oldName=list[idx];
+    if(oldName===undefined) return;
+    const entered=prompt('Rename custom species',oldName);
+    if(entered===null) return;
+    const name=normaliseSpeciesName(entered);
+    if(!name){ alert('Enter a species name, or use Delete.'); return; }
+    if(SPECIES_OPTIONS.some(v=>v.toLowerCase()===name.toLowerCase()) || list.some((v,i)=>i!==idx && v.toLowerCase()===name.toLowerCase())){
+      alert('That species is already in the list.'); return;
+    }
+    list[idx]=name;
+    setCustomSpeciesOptions(list);
+    renderCustomSpeciesManager();
+    showNotice('Custom species renamed. Existing survey records are unchanged.');
+  });
+}
+function manageCustomSpecies(){
+  const box=$('customSpeciesManagerList');
+  if(!box) return;
+  if(!box.classList.contains('hidden')){ box.classList.add('hidden'); return; }
+  renderCustomSpeciesManager();
 }
 function renderSpeciesDatalist(id){
   return `<datalist id="${id}">${getAllSpeciesOptions().map(opt=>`<option value="${escapeHtml(opt)}"></option>`).join('')}</datalist>`;
