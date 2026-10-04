@@ -3982,9 +3982,17 @@ async function compressImageFile(file, maxDim=1600, quality=0.82){
   });
 }
 
+function budSurveyExportFeatureCollection(project){
+  return {type:'FeatureCollection', name:project.name, features:(project.features||[]).map(f=>{
+    if(!isSafetyMode(project)) return f;
+    const props=Object.assign({},f.properties||{});
+    delete props.rpa_radius;
+    return Object.assign({},f,{properties:props});
+  })};
+}
 function exportGeoJSON(){
   const p=ensureProject(); if(!p) return;
-  const fc={type:'FeatureCollection', name:p.name, features:p.features};
+  const fc=budSurveyExportFeatureCollection(p);
   downloadText(`${slugify(p.name)}_survey.geojson`, JSON.stringify(fc,null,2), 'application/geo+json');
 }
 
@@ -3994,7 +4002,7 @@ function budExportPhotoNames(props){return Array.isArray(props.photos)?props.pho
 function budAllExportHeaders(project){
   const schemaKeys=(project&&Array.isArray(project.schema)?project.schema:defaultSchema).map(f=>f.key).filter(Boolean);
   const extras=['rpa_radius','effective_dbh_mm','lat','lon','geometry_type','wkt','photo_count','photo_names'];
-  return Array.from(new Set(schemaKeys.concat(extras)));
+  return Array.from(new Set(schemaKeys.concat(extras))).filter(key=>!isSafetyMode(project)||key!=='rpa_radius');
 }
 function budExportValue(feature,key){
   const props=feature.properties||{};
@@ -4005,6 +4013,7 @@ function budExportValue(feature,key){
   if(key==='wkt') return budGeomToWkt ? budGeomToWkt(feature.geometry) : '';
   if(key==='photo_count') return budExportPhotoCount(props);
   if(key==='photo_names') return budExportPhotoNames(props);
+  if(key==='photos') return budExportPhotoNames(props);
   if(key==='effective_dbh_mm'){
     const eff=effectiveDbhMm(props);
     return Number.isFinite(eff)?Math.round(eff):'';
@@ -4115,7 +4124,7 @@ async function budCollectProjectZipEntries(p){
     {name:`${slug}.bud`, blob:new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})},
     {name:'README.txt', blob:new Blob([budProjectReadmeText(p)],{type:'text/plain'})},
     {name:`exports/${slug}_tree_survey.csv`, blob:new Blob([budScheduleCsvText(p)],{type:'text/csv'})},
-    {name:`exports/${slug}_tree_survey.geojson`, blob:new Blob([JSON.stringify(payload.survey_geojson,null,2)],{type:'application/geo+json'})},
+    {name:`exports/${slug}_tree_survey.geojson`, blob:new Blob([JSON.stringify(Object.assign({},payload.survey_geojson,{features:budSurveyExportFeatureCollection(p).features}),null,2)],{type:'application/geo+json'})},
     {name:`exports/${slug}_tree_survey.kml`, blob:new Blob([buildTreeSurveyKml(p)],{type:'application/vnd.google-earth.kml+xml'})},
     {name:`exports/${slug}_bud_project_package.json`, blob:new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})},
     {name:`backups/${stamp}_${slug}.bud`, blob:new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})}
@@ -4505,7 +4514,7 @@ async function ensureBudProjectSubfolders(dir){
 }
 function budScheduleCsvText(p){
   const headers = isSafetyMode(p)
-    ? ['tree_id','feature_type','species','age','stem_diameter','est_height','canopy_n','canopy_e','canopy_s','canopy_w','rpa_radius','physiological_condition','structural_condition','condition_comments','target_type','target_occupancy','defects','recommendation','work_spec','timing','priority','tpo_application_required','safety_comments','notes','x','y']
+    ? ['tree_id','feature_type','species','age','stem_diameter','est_height','canopy_n','canopy_e','canopy_s','canopy_w','physiological_condition','structural_condition','condition_comments','target_type','target_occupancy','defects','recommendation','work_spec','timing','priority','tpo_application_required','safety_comments','notes','x','y']
     : ['tree_id','feature_type','species','age','category','stem_diameter','est_height','canopy_n','canopy_e','canopy_s','canopy_w','rpa_radius','first_branch_n','first_branch_e','first_branch_s','first_branch_w','canopy_clearance','physiological_condition','structural_condition','condition_comments','preliminary_management','remaining_years','notes','x','y'];
   return [headers.join(',')].concat((p.features||[]).map(f=>headers.map(h=>csvCell(f.properties[h]??'')).join(','))).join('\n');
 }
@@ -4563,7 +4572,7 @@ async function syncBudToFolder(opts={}){
   await budWriteText(backupsDir,`${stamp}_${slug}.bud`,JSON.stringify(payload,null,2));
 
   await budWriteText(exportsDir,`${slug}_tree_survey.csv`,budScheduleCsvText(p),'text/csv');
-  await budWriteText(exportsDir,`${slug}_tree_survey.geojson`,JSON.stringify(payload.survey_geojson,null,2),'application/geo+json');
+  await budWriteText(exportsDir,`${slug}_tree_survey.geojson`,JSON.stringify(Object.assign({},payload.survey_geojson,{features:budSurveyExportFeatureCollection(p).features}),null,2),'application/geo+json');
   await budWriteText(exportsDir,`${slug}_tree_survey.kml`,buildTreeSurveyKml(p),'application/vnd.google-earth.kml+xml');
   await budWriteText(exportsDir,`${slug}_bud_project_package.json`,JSON.stringify(payload,null,2),'application/json');
   const photoCount=await exportBudPhotosToFolder(photosDir,p);
@@ -4819,6 +4828,7 @@ function budFeatureExportProps(feature, layerName){
 function budRpaFeatureCollection(){
   const p=ensureProject(); if(!p)return null;
   const feats=[];
+  if(isSafetyMode(p)) return {type:'FeatureCollection',features:feats};
   (p.features||[]).forEach(f=>{
     const g=f.geometry||{};
     let rpa=null;
@@ -4834,7 +4844,7 @@ function budRpaFeatureCollection(){
 function budGisProjectFeatureCollection(){
   const p=ensureProject(); if(!p)return null;
   const features=[];
-  (p.features||[]).forEach(f=>features.push({type:'Feature',id:f.id,geometry:f.geometry,properties:budFeatureExportProps(f,'survey')}));
+  budSurveyExportFeatureCollection(p).features.forEach(f=>features.push({type:'Feature',id:f.id,geometry:f.geometry,properties:budFeatureExportProps(f,'survey')}));
   const rpaFc=budRpaFeatureCollection();
   (rpaFc.features||[]).forEach(f=>features.push(f));
   groupStemPoints(p).forEach((s,i)=>features.push({type:'Feature',id:s.id||('group_stem_'+(i+1)),geometry:s.geometry,properties:Object.assign({},s.properties||{},{layer:'group_stem_points',parent_id:s.parent_id||'',stem_id:s.stem_id||'',wkt:budGeomToWkt(s.geometry)})}));
@@ -5371,8 +5381,18 @@ function budAnchorDownloadBlob(blob, filename){
   },5000);
 }
 
+function budPdfPriorityRgb(props){
+  const hex=safetyPriorityColor(props).slice(1);
+  return [0,2,4].map(i=>parseInt(hex.slice(i,i+2),16)/255);
+}
+function budPdfFeatureColours(props, safety){
+  if(!safety) return '0.90 0.96 0.92 rg 0.18 0.37 0.27 RG';
+  const rgb=budPdfPriorityRgb(props);
+  return rgb.map(v=>budPdfNum(0.80+v*0.20)).join(' ')+' rg '+rgb.map(budPdfNum).join(' ')+' RG';
+}
 function exportTreeLocationPdf(){
   const p=ensureProject(); if(!p) return;
+  const safety=isSafetyMode(p);
   const features=(p.features||[]).filter(f=>f&&f.geometry);
   const planFeatures=features.filter(f=>{
     const t=String((f.properties&&f.properties.feature_type)||'').toUpperCase();
@@ -5447,7 +5467,7 @@ function exportTreeLocationPdf(){
     if(['G','H','W'].includes(t)&&['Polygon','MultiPolygon'].includes(f.geometry.type)){
       const path=budPdfGeomPath(f.geometry,project);
       if(path){
-        c+='q 0.90 0.96 0.92 rg 0.18 0.37 0.27 RG 1.2 w\n'+path+'B\nQ\n';
+        c+='q '+budPdfFeatureColours(f.properties,safety)+' 1.2 w\n'+path+'B\nQ\n';
         const centre=budPdfCentre(f.geometry,project);
         c+=budPdfTextCmd(budSafetyPlanFeatureId(f),centre[0]-7,centre[1]+3,10,'bold');
       }
@@ -5458,7 +5478,7 @@ function exportTreeLocationPdf(){
   individualCanopyFeatures.forEach(canopy=>{
     const path=budPdfGeomPath(canopy.geometry,project);
     if(path){
-      c+='q 0.90 0.96 0.92 rg 0.18 0.37 0.27 RG 0.9 w\n'+path+'B\nQ\n';
+      c+='q '+budPdfFeatureColours(canopy.properties,safety)+' 0.9 w\n'+path+'B\nQ\n';
     }
   });
 
@@ -5467,7 +5487,8 @@ function exportTreeLocationPdf(){
     const t=String((f.properties&&f.properties.feature_type)||'').toUpperCase();
     if((t==='T'||!['G','H','W'].includes(t)) && f.geometry.type==='Point'&&Array.isArray(f.geometry.coordinates)){
       const pt=project(f.geometry.coordinates);
-      c+='q 0.09 0.14 0.12 rg 1 1 1 RG 1 w\n'+budPdfCircle(pt[0],pt[1],4)+'B\nQ\n';
+      const pointRgb=safety?budPdfPriorityRgb(f.properties).map(budPdfNum).join(' '):'0.09 0.14 0.12';
+      c+='q '+pointRgb+' rg 1 1 1 RG 1 w\n'+budPdfCircle(pt[0],pt[1],4)+'B\nQ\n';
       c+=budPdfTextCmd(budSafetyPlanFeatureId(f),pt[0]+7,pt[1]+5,10,'bold');
     }
   });
@@ -5483,7 +5504,14 @@ function exportTreeLocationPdf(){
   c+='0.90 0.96 0.92 rg 0.18 0.37 0.27 RG 1 w '+budPdfNum(margin+94)+' '+budPdfNum(fy-4)+' 12 8 re B\n';
   c+=budPdfTextCmd('Canopy / group / hedge / woodland polygon',margin+111,fy-3,7,'normal');
   c+='q 1 0.97 0.97 rg 0.74 0.16 0.14 RG 1 w [3 2] 0 d '+budPdfNum(margin+255)+' '+budPdfNum(fy-4)+' 12 8 re B Q\n';
-  c+=budPdfTextCmd('Red line boundary',margin+272,fy-3,7,'normal');
+  c+=budPdfTextCmd(safety?'Survey extents':'Red line boundary',margin+272,fy-3,7,'normal');
+  if(safety){
+    ['Urgent','High','Moderate','Low','No action','Unspecified'].forEach((priority,i)=>{
+      const x=margin+i*83;
+      c+=budPdfPriorityRgb({priority}).map(budPdfNum).join(' ')+' rg '+budPdfNum(x)+' 49 9 7 re f\n';
+      c+=budPdfTextCmd(priority,x+13,49,7,'normal');
+    });
+  }
   c+=budPdfTextCmd('Indicative tree location plan. Not a measured topographical plan or BS5837 constraints plan.',margin,38,7,'normal');
 
   const streamBytes=new TextEncoder().encode(c).length;
@@ -5613,3 +5641,4 @@ boot().catch(err=>{ console.error(err); alert('App failed to start: '+(err && er
 </script>
 </body>
 </html>
+
