@@ -611,6 +611,17 @@ label.btn,
 /* RC2l: no watermark, no ivy, no decorative background marks */
 .brandline.brand-compact::after{display:none!important;content:none!important;background:none!important}
 .brand-watermark,.ivy-corner{display:none!important;content:none!important;background:none!important}
+/* Project location picker is independent of the survey map. */
+#setupLocationPicker{z-index:10000;background:var(--bg);display:flex;flex-direction:column}
+.location-picker-header,.location-picker-actions{padding:12px;display:flex;gap:12px;align-items:center}
+.location-picker-header h2{font-size:18px;margin:0}
+.location-picker-map-wrap{position:relative;flex:1;min-height:0}
+#setupLocationPickerMap{height:100%;width:100%}
+.location-picker-crosshair{position:absolute;top:50%;left:50%;width:28px;height:28px;transform:translate(-50%,-50%);z-index:500;pointer-events:none;filter:drop-shadow(0 0 2px white)}
+.location-picker-crosshair::before,.location-picker-crosshair::after{content:'';position:absolute;background:var(--leaf-dark);box-shadow:0 0 0 1px white}
+.location-picker-crosshair::before{width:28px;height:2px;top:13px;left:0}
+.location-picker-crosshair::after{height:28px;width:2px;left:13px;top:0}
+.location-picker-actions .btn{flex:1}
 </style>
 <link rel="manifest" href="./manifest.webmanifest">
 <meta name="theme-color" content="#183226">
@@ -952,6 +963,11 @@ label.btn,
   </div>
 </div>
 
+<div id="setupLocationPicker" class="app-screen hidden" role="dialog" aria-modal="true" aria-labelledby="setupLocationPickerTitle">
+  <div class="location-picker-header"><h2 id="setupLocationPickerTitle">Set site centre</h2><span class="sub">Move the map to position the crosshair.</span></div>
+  <div class="location-picker-map-wrap"><div id="setupLocationPickerMap"></div><div class="location-picker-crosshair" aria-hidden="true"></div></div>
+  <div class="location-picker-actions"><button id="setupLocationPickerCancel" class="btn" type="button">Cancel</button><button id="setupLocationPickerUse" class="btn primary" type="button">Use this location</button></div>
+</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.9.0/dist/proj4.js"></script>
@@ -1954,18 +1970,55 @@ async function setupUseGps(){
     await apply({lat:pos.coords.latitude,lng:pos.coords.longitude},'GPS location');
   }, err=>alert('GPS location failed.'), {enableHighAccuracy:true, maximumAge:5000, timeout:15000});
 }
-async function setupUseMapCentre(){
-  if(!state.map){alert('Open the map once before using map centre.');return;}
-  const c=state.map.getCenter();
+let setupLocationPickerMap=null;
+function closeSetupLocationPicker(){
+  if(setupLocationPickerMap){setupLocationPickerMap.remove();setupLocationPickerMap=null;}
+  $('setupLocationPicker').classList.add('hidden');
+  document.removeEventListener('keydown',setupLocationPickerKeydown);
+  $('setupUseMapCentreBtn')?.focus();
+}
+function setupLocationPickerKeydown(event){
+  if(event.key==='Escape'){event.preventDefault();closeSetupLocationPicker();}
+  if(event.key==='Tab'){
+    const cancel=$('setupLocationPickerCancel'), use=$('setupLocationPickerUse');
+    if(event.shiftKey && document.activeElement===cancel){event.preventDefault();use.focus();}
+    else if(!event.shiftKey && document.activeElement===use){event.preventDefault();cancel.focus();}
+  }
+}
+function setupUseMapCentre(){
+  if(setupLocationPickerMap) return;
+  let centre=[54,-2], zoom=6;
+  const draft=getSetupLocationDraft();
+  const eRaw=($('setupEastingInput')?.value||'').trim();
+  const nRaw=($('setupNorthingInput')?.value||'').trim();
+  if(draft){centre=[draft.lat,draft.lon];zoom=17;}
+  else if(eRaw && nRaw && Number.isFinite(Number(eRaw)) && Number.isFinite(Number(nRaw))){
+    try{const out=proj4('EPSG:27700','EPSG:4326',[Number(eRaw),Number(nRaw)]);if(out.every(Number.isFinite)){centre=[out[1],out[0]];zoom=17;}}catch(e){}
+  }else if(state.currentGpsLatLng){centre=[state.currentGpsLatLng.lat,state.currentGpsLatLng.lng];zoom=17;}
+  $('setupLocationPicker').classList.remove('hidden');
+  try{
+    setupLocationPickerMap=L.map('setupLocationPickerMap').setView(centre,zoom);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,attribution:'&copy; OpenStreetMap contributors'}).addTo(setupLocationPickerMap);
+    setupLocationPickerMap.invalidateSize();
+  }catch(e){closeSetupLocationPicker();alert('Could not open the location map.');return;}
+  $('setupLocationPickerCancel').onclick=closeSetupLocationPicker;
+  $('setupLocationPickerUse').onclick=confirmSetupLocationPicker;
+  document.addEventListener('keydown',setupLocationPickerKeydown);
+  $('setupLocationPickerCancel').focus();
+}
+function confirmSetupLocationPicker(){
+  if(!setupLocationPickerMap)return;
+  const c=setupLocationPickerMap.getCenter();
   try{
     const out=proj4('EPSG:4326','EPSG:27700',[c.lng,c.lat]);
-    if($('setupEastingInput')) $('setupEastingInput').value=Math.round(Number(out[0]));
-    if($('setupNorthingInput')) $('setupNorthingInput').value=Math.round(Number(out[1]));
-    if($('setupLocationInput') && !$('setupLocationInput').value.trim()) $('setupLocationInput').value='Map centre';
-  }catch(e){}
-  setSetupLocationDraft(c.lat,c.lng,$('setupLocationInput')?.value||'Map centre','map centre');
-  if(currentProject() && $('newProjectSetupPanel') && $('newProjectSetupPanel').classList.contains('hidden')) await setBudProjectLocation(c.lat,c.lng,'Using current map centre.',$('setupLocationInput')?.value||'Map centre');
-  else showNotice('Site centre set from map.');
+    if(!out.every(Number.isFinite))throw new Error('Invalid coordinates');
+    $('setupEastingInput').value=Math.round(out[0]);
+    $('setupNorthingInput').value=Math.round(out[1]);
+    const label=$('setupLocationInput').value.trim()||'Map centre';
+    setSetupLocationDraft(c.lat,c.lng,label,'map centre');
+    closeSetupLocationPicker();
+    showNotice('Site centre set from map.');
+  }catch(e){alert('Could not set that location.');}
 }
 async function openSetupMap(){if(!currentProject()){ alert('Use New project or Open existing project first.'); return; } showMap(); switchBaseMap('aerial'); setTimeout(()=>{if(state.map){state.map.invalidateSize(); rebuildMap(); fitMapToProject();}},120);}
 function switchBaseMap(mode){if(!state.map)return;try{if(mode==='street'){if(state.map.hasLayer(state.satLayer))state.map.removeLayer(state.satLayer);if(!state.map.hasLayer(state.stdLayer))state.stdLayer.addTo(state.map);}else{if(state.map.hasLayer(state.stdLayer))state.map.removeLayer(state.stdLayer);if(!state.map.hasLayer(state.satLayer))state.satLayer.addTo(state.map);}}catch(e){}}
