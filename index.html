@@ -2407,7 +2407,7 @@ function renderFeatureSheet(feature){
     <div class="feature-actions">
       <button class="btn" id="editGeometryBtn">Edit geometry</button>
       <button class="btn" id="saveDuplicateBtn">Save &amp; Duplicate</button>
-      ${String(props.feature_type||'').toUpperCase()==='G' ? '<button class="btn" id="plotStemsBtn">Plot stems</button>' : ''}
+      ${['G','W'].includes(String(props.feature_type||'').toUpperCase()) ? '<button class="btn" id="plotStemsBtn">Plot stems</button>' : ''}
       <button class="btn warn" id="deleteFeatureBtn">Delete</button>
       <button class="btn primary" id="doneFeatureBtn">Done</button>
     </div>
@@ -2624,7 +2624,7 @@ function startStemPlotterForSelectedFeature(){
   const feature=getFeatureById(state.selectedFeatureId);
   if(!feature) return;
   const pr=feature.properties||{};
-  if(String(pr.feature_type||'').toUpperCase()!=='G'){ showNotice('Stem plotter is for groups only.'); return; }
+  if(!['G','W'].includes(String(pr.feature_type||'').toUpperCase())){ showNotice('Stem plotter is for groups and woodland only.'); return; }
   closeSheets();
   state.stemPlotter={parent_feature_id:feature.id,parent_id:pr.tree_id||feature.id};
   updateStemPlotterUi();
@@ -2644,7 +2644,7 @@ async function addGpsStemPoint(){
   if(!state.stemPlotter) return;
   if(!state.currentGpsLatLng){ showGps('Waiting for GPS fix…'); return; }
   await addStemPointAtLatLng(state.currentGpsLatLng);
-  showGps('Group stem point added from GPS.');
+  showGps('Stem point added from GPS.');
 }
 async function undoLastStemPoint(){
   const p=ensureProject(); const sp=state.stemPlotter; if(!p||!sp) return;
@@ -2652,13 +2652,13 @@ async function undoLastStemPoint(){
   for(let i=list.length-1;i>=0;i--){
     if(String(list[i].parent_id||'')===String(sp.parent_id)){ list.splice(i,1); break; }
   }
-  await saveCurrentProject(); rebuildMap(); updateStemPlotterUi(); showNotice('Last group stem point removed.');
+  await saveCurrentProject(); rebuildMap(); updateStemPlotterUi(); showNotice('Last stem point removed.');
 }
 async function clearStemPointsForActiveGroup(){
   const p=ensureProject(); const sp=state.stemPlotter; if(!p||!sp) return;
-  if(!confirm('Clear all stem points for this group?')) return;
+  if(!confirm('Clear all stem points for this feature?')) return;
   p.group_stem_points=groupStemPoints(p).filter(s=>String(s.parent_id||'')!==String(sp.parent_id));
-  await saveCurrentProject(); rebuildMap(); updateStemPlotterUi(); showNotice('Group stem points cleared.');
+  await saveCurrentProject(); rebuildMap(); updateStemPlotterUi(); showNotice('Stem points cleared.');
 }
 function finishStemPlotter(){
   state.stemPlotter=null;
