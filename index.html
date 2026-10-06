@@ -2362,9 +2362,11 @@ function renderInput(field, value, props){
     return `<div class="field"><label>${label}</label><select data-field-key="${key}" ${ro?'disabled':''}>${options.map(opt=>`<option value="${escapeHtml(opt)}" ${String(opt)===val?'selected':''}>${escapeHtml(opt)}</option>`).join('')}</select></div>`;
   }
   if(field.type==='select'){
-    const options=(field.options||[]).slice();
+    // Keep an explicit blank choice so a new Safety field never *looks* selected
+    // until the surveyor has actually chosen and saved a value.
+    const options=(field.options||[]).filter(opt=>String(opt)!=='').slice();
     if(field.key==='priority' && !options.includes('No action')) options.push('No action');
-    return `<div class="field"><label>${label}</label><select data-field-key="${key}" ${ro?'disabled':''}>${options.map(opt=>`<option value="${escapeHtml(opt)}" ${String(opt)===val?'selected':''}>${escapeHtml(opt)}</option>`).join('')}</select></div>`;
+    return `<div class="field"><label>${label}</label><select data-field-key="${key}" ${ro?'disabled':''}><option value="" ${val===''?'selected':''}>— Select —</option>${options.map(opt=>`<option value="${escapeHtml(opt)}" ${String(opt)===val?'selected':''}>${escapeHtml(opt)}</option>`).join('')}</select></div>`;
   }
   return `<div class="field"><label>${label}</label><input class="input" data-field-key="${key}" type="text" value="${escapeHtml(val)}" ${ro?'readonly':''} /></div>`;
 }
@@ -3227,13 +3229,14 @@ function categoryColor(category){
   return '#2F80ED';
 }
 
+// RELEASE FIX 2026-10-06: explicit safety priority + live walk trace
 function safetyPriorityBase(props){
-  const s = String((props&&props.priority) || (props&&props.timing) || '').trim().toLowerCase();
-  if(/urgent|immediate/.test(s)) return 'Urgent';
-  if(/high|1 month/.test(s)) return 'High';
-  if(/moderate|3 months|12 months/.test(s)) return 'Moderate';
-  if(/no action|none|no works|not required/.test(s)) return 'No action';
-  if(/low|monitor|routine/.test(s)) return 'Low';
+  const s = String((props&&props.priority) || '').trim().toLowerCase();
+  if(s==='urgent') return 'Urgent';
+  if(s==='high') return 'High';
+  if(s==='moderate') return 'Moderate';
+  if(s==='low') return 'Low';
+  if(s==='no action') return 'No action';
   return '';
 }
 function safetyPriorityColor(props){
@@ -3661,6 +3664,26 @@ function walkBoundaryDistanceMetres(a,b){
   const h=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
   return 2*R*Math.atan2(Math.sqrt(h),Math.sqrt(1-h));
 }
+function clearWalkBoundaryPreview(wb=state.walkBoundary){
+  if(!wb || !wb.previewLayer || !state.map) return;
+  try{ state.map.removeLayer(wb.previewLayer); }catch(e){}
+  wb.previewLayer=null;
+}
+function updateWalkBoundaryPreview(){
+  const wb=state.walkBoundary;
+  if(!wb || !state.map) return;
+  clearWalkBoundaryPreview(wb);
+  const pts=wb.coords.map(c=>[c[1],c[0]]);
+  if(!pts.length) return;
+  const style={color:'#315f8a',weight:3,dashArray:'6 6',interactive:false};
+  if(pts.length>=3){
+    wb.previewLayer=L.polygon(pts,Object.assign({},style,{fillColor:'#315f8a',fillOpacity:0.10})).addTo(state.map);
+  }else if(pts.length>=2){
+    wb.previewLayer=L.polyline(pts,style).addTo(state.map);
+  }else{
+    wb.previewLayer=L.circleMarker(pts[0],{radius:5,color:'#315f8a',weight:2,fillColor:'#315f8a',fillOpacity:0.45,interactive:false}).addTo(state.map);
+  }
+}
 function walkBoundaryAddCoord(lng,lat,auto=false){
   const wb=state.walkBoundary; if(!wb) return false;
   const coord=[lng,lat];
@@ -3669,6 +3692,7 @@ function walkBoundaryAddCoord(lng,lat,auto=false){
   if(last&&walkBoundaryDistanceMetres(last,coord)<minDist) return false;
   wb.coords.push(coord);
   wb.lastAddedMs=Date.now();
+  updateWalkBoundaryPreview();
   updateWalkBoundaryUi();
   showGps(`Walk boundary point ${wb.coords.length} added${auto?' automatically':''}.`);
   return true;
@@ -3697,7 +3721,7 @@ function startWalkBoundary(){
   if(type==='T'){ alert('Walk boundary is for groups, hedges and woodland.'); return; }
   closeSheets();
   if(!state.gpsTracking) startGpsTracking();
-  state.walkBoundary={featureType:type,category:state.createChoice.category,coords:[],walking:false,lastAddedMs:0};
+  state.walkBoundary={featureType:type,category:state.createChoice.category,coords:[],walking:false,lastAddedMs:0,previewLayer:null};
   updateWalkBoundaryUi();
   showNotice('Walk boundary ready. Tap Start walk, then Stop walk and Finish polygon.');
 }
@@ -3745,6 +3769,7 @@ async function walkFinishPolygon(){
     updatePointPropsFromLatLng(feature.properties,centre);
   }catch(e){}
   p.features.push(feature);
+  clearWalkBoundaryPreview(wb);
   state.walkBoundary=null;
   await saveCurrentProject();
   rebuildMap();
@@ -3752,7 +3777,10 @@ async function walkFinishPolygon(){
   openFeatureSheet(feature.id);
 }
 function walkCancelPolygon(){
-  if(state.walkBoundary) state.walkBoundary.walking=false;
+  if(state.walkBoundary){
+    state.walkBoundary.walking=false;
+    clearWalkBoundaryPreview(state.walkBoundary);
+  }
   state.walkBoundary=null;
   updateWalkBoundaryUi();
   showNotice('Walk boundary cancelled.');

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bud-leaf-r2d2-v8';
+const CACHE_NAME = 'bud-leaf-r2d2-v9';
 const CORE_FILES = [
   './index.html',
   './manifest.webmanifest'
