@@ -611,17 +611,6 @@ label.btn,
 /* RC2l: no watermark, no ivy, no decorative background marks */
 .brandline.brand-compact::after{display:none!important;content:none!important;background:none!important}
 .brand-watermark,.ivy-corner{display:none!important;content:none!important;background:none!important}
-/* Project location picker is independent of the survey map. */
-#setupLocationPicker{z-index:10000;background:var(--bg);display:flex;flex-direction:column}
-.location-picker-header,.location-picker-actions{padding:12px;display:flex;gap:12px;align-items:center}
-.location-picker-header h2{font-size:18px;margin:0}
-.location-picker-map-wrap{position:relative;flex:1;min-height:0}
-#setupLocationPickerMap{height:100%;width:100%}
-.location-picker-crosshair{position:absolute;top:50%;left:50%;width:28px;height:28px;transform:translate(-50%,-50%);z-index:500;pointer-events:none;filter:drop-shadow(0 0 2px white)}
-.location-picker-crosshair::before,.location-picker-crosshair::after{content:'';position:absolute;background:var(--leaf-dark);box-shadow:0 0 0 1px white}
-.location-picker-crosshair::before{width:28px;height:2px;top:13px;left:0}
-.location-picker-crosshair::after{height:28px;width:2px;left:13px;top:0}
-.location-picker-actions .btn{flex:1}
 </style>
 <link rel="manifest" href="./manifest.webmanifest">
 <meta name="theme-color" content="#183226">
@@ -963,11 +952,6 @@ label.btn,
   </div>
 </div>
 
-<div id="setupLocationPicker" class="app-screen hidden" role="dialog" aria-modal="true" aria-labelledby="setupLocationPickerTitle">
-  <div class="location-picker-header"><h2 id="setupLocationPickerTitle">Set site centre</h2><span class="sub">Move the map to position the crosshair.</span></div>
-  <div class="location-picker-map-wrap"><div id="setupLocationPickerMap"></div><div class="location-picker-crosshair" aria-hidden="true"></div></div>
-  <div class="location-picker-actions"><button id="setupLocationPickerCancel" class="btn" type="button">Cancel</button><button id="setupLocationPickerUse" class="btn primary" type="button">Use this location</button></div>
-</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.9.0/dist/proj4.js"></script>
@@ -1586,7 +1570,15 @@ function renderProjectList(){
   if(archivedProjects.length) out += `<div class="section-title" style="margin-top:12px">Archived projects</div>${renderItems(archivedProjects,true)}`;
   box.innerHTML = out;
   box.querySelectorAll('[data-project-select]').forEach(btn=>btn.onclick=()=>{state.currentProjectId=btn.dataset.projectSelect; renderProjectList(); renderCurrentProjectSummary(); renderProjectPill(); afterProjectOpenedUi(); showNotice('Project selected.');});
-  box.querySelectorAll('[data-project-open]').forEach(btn=>btn.onclick=()=>{state.currentProjectId=btn.dataset.projectOpen; renderProjectList(); renderCurrentProjectSummary(); renderProjectPill(); afterProjectOpenedUi(); showMap();});
+  box.querySelectorAll('[data-project-open]').forEach(btn=>btn.onclick=async ()=>{
+    state.currentProjectId=btn.dataset.projectOpen;
+    renderProjectList(); renderCurrentProjectSummary(); renderProjectPill(); afterProjectOpenedUi();
+    // Re-establish the linked project folder as the project opens. In normal use
+    // this is silent; if Android/browser permission has genuinely been lost, the
+    // existing reconnect flow is shown before field work continues.
+    await ensureProjectFileSetupForSurvey();
+    showMap();
+  });
   box.querySelectorAll('[data-project-delete]').forEach(btn=>btn.onclick=async ()=>{
     const id=btn.dataset.projectDelete;
     const project=state.projects.find(p=>p.id===id);
@@ -1970,55 +1962,18 @@ async function setupUseGps(){
     await apply({lat:pos.coords.latitude,lng:pos.coords.longitude},'GPS location');
   }, err=>alert('GPS location failed.'), {enableHighAccuracy:true, maximumAge:5000, timeout:15000});
 }
-let setupLocationPickerMap=null;
-function closeSetupLocationPicker(){
-  if(setupLocationPickerMap){setupLocationPickerMap.remove();setupLocationPickerMap=null;}
-  $('setupLocationPicker').classList.add('hidden');
-  document.removeEventListener('keydown',setupLocationPickerKeydown);
-  $('setupUseMapCentreBtn')?.focus();
-}
-function setupLocationPickerKeydown(event){
-  if(event.key==='Escape'){event.preventDefault();closeSetupLocationPicker();}
-  if(event.key==='Tab'){
-    const cancel=$('setupLocationPickerCancel'), use=$('setupLocationPickerUse');
-    if(event.shiftKey && document.activeElement===cancel){event.preventDefault();use.focus();}
-    else if(!event.shiftKey && document.activeElement===use){event.preventDefault();cancel.focus();}
-  }
-}
-function setupUseMapCentre(){
-  if(setupLocationPickerMap) return;
-  let centre=[54,-2], zoom=6;
-  const draft=getSetupLocationDraft();
-  const eRaw=($('setupEastingInput')?.value||'').trim();
-  const nRaw=($('setupNorthingInput')?.value||'').trim();
-  if(draft){centre=[draft.lat,draft.lon];zoom=17;}
-  else if(eRaw && nRaw && Number.isFinite(Number(eRaw)) && Number.isFinite(Number(nRaw))){
-    try{const out=proj4('EPSG:27700','EPSG:4326',[Number(eRaw),Number(nRaw)]);if(out.every(Number.isFinite)){centre=[out[1],out[0]];zoom=17;}}catch(e){}
-  }else if(state.currentGpsLatLng){centre=[state.currentGpsLatLng.lat,state.currentGpsLatLng.lng];zoom=17;}
-  $('setupLocationPicker').classList.remove('hidden');
-  try{
-    setupLocationPickerMap=L.map('setupLocationPickerMap').setView(centre,zoom);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,attribution:'&copy; OpenStreetMap contributors'}).addTo(setupLocationPickerMap);
-    setupLocationPickerMap.invalidateSize();
-  }catch(e){closeSetupLocationPicker();alert('Could not open the location map.');return;}
-  $('setupLocationPickerCancel').onclick=closeSetupLocationPicker;
-  $('setupLocationPickerUse').onclick=confirmSetupLocationPicker;
-  document.addEventListener('keydown',setupLocationPickerKeydown);
-  $('setupLocationPickerCancel').focus();
-}
-function confirmSetupLocationPicker(){
-  if(!setupLocationPickerMap)return;
-  const c=setupLocationPickerMap.getCenter();
+async function setupUseMapCentre(){
+  if(!state.map){alert('Open the map once before using map centre.');return;}
+  const c=state.map.getCenter();
   try{
     const out=proj4('EPSG:4326','EPSG:27700',[c.lng,c.lat]);
-    if(!out.every(Number.isFinite))throw new Error('Invalid coordinates');
-    $('setupEastingInput').value=Math.round(out[0]);
-    $('setupNorthingInput').value=Math.round(out[1]);
-    const label=$('setupLocationInput').value.trim()||'Map centre';
-    setSetupLocationDraft(c.lat,c.lng,label,'map centre');
-    closeSetupLocationPicker();
-    showNotice('Site centre set from map.');
-  }catch(e){alert('Could not set that location.');}
+    if($('setupEastingInput')) $('setupEastingInput').value=Math.round(Number(out[0]));
+    if($('setupNorthingInput')) $('setupNorthingInput').value=Math.round(Number(out[1]));
+    if($('setupLocationInput') && !$('setupLocationInput').value.trim()) $('setupLocationInput').value='Map centre';
+  }catch(e){}
+  setSetupLocationDraft(c.lat,c.lng,$('setupLocationInput')?.value||'Map centre','map centre');
+  if(currentProject() && $('newProjectSetupPanel') && $('newProjectSetupPanel').classList.contains('hidden')) await setBudProjectLocation(c.lat,c.lng,'Using current map centre.',$('setupLocationInput')?.value||'Map centre');
+  else showNotice('Site centre set from map.');
 }
 async function openSetupMap(){if(!currentProject()){ alert('Use New project or Open existing project first.'); return; } showMap(); switchBaseMap('aerial'); setTimeout(()=>{if(state.map){state.map.invalidateSize(); rebuildMap(); fitMapToProject();}},120);}
 function switchBaseMap(mode){if(!state.map)return;try{if(mode==='street'){if(state.map.hasLayer(state.satLayer))state.map.removeLayer(state.satLayer);if(!state.map.hasLayer(state.stdLayer))state.stdLayer.addTo(state.map);}else{if(state.map.hasLayer(state.stdLayer))state.map.removeLayer(state.stdLayer);if(!state.map.hasLayer(state.satLayer))state.satLayer.addTo(state.map);}}catch(e){}}
@@ -2110,6 +2065,10 @@ async function clearBudLocalData(){
 }
 function renderProjectPill(){ const p=currentProject(); if($('projectTitleBar')){ if(p) syncProjectModeUi(p); else $('projectTitleBar').textContent='No project'; } }
 
+const BUD_PROJECT_SNAPSHOT_INTERVAL_MS=15*60*1000;
+const BUD_PROJECT_SNAPSHOT_KEEP=100;
+let budLiveSyncInProgress=false;
+
 async function saveCurrentProject(force=false){
   const p=currentProject();
   if(!p) return;
@@ -2120,6 +2079,17 @@ async function saveCurrentProject(force=false){
   if(force || budAutoSaveEnabled()){
     await putProjectDb(p);
     const st=$('budAutoSaveStatus'); if(st)st.textContent='Saved '+new Date().toLocaleTimeString();
+
+    // A linked project is the durable field copy. Keep its live .bud file current
+    // on every normal save; do not require the surveyor to press Sync.
+    if(!budLiveSyncInProgress && p._linkedProjectFolderHandle){
+      try{
+        await syncBudLiveProjectFile({writePhotos:false, allowSnapshot:true});
+      }catch(err){
+        console.warn('Automatic linked project save failed.',err);
+        showNotice('Saved on this device, but the linked project file did not update. Reconnect the Projects folder.');
+      }
+    }
   }
   renderCurrentProjectSummary();
   renderProjectList();
@@ -2407,7 +2377,7 @@ function renderFeatureSheet(feature){
     <div class="feature-actions">
       <button class="btn" id="editGeometryBtn">Edit geometry</button>
       <button class="btn" id="saveDuplicateBtn">Save &amp; Duplicate</button>
-      ${['G','W'].includes(String(props.feature_type||'').toUpperCase()) ? '<button class="btn" id="plotStemsBtn">Plot stems</button>' : ''}
+      ${String(props.feature_type||'').toUpperCase()==='G' ? '<button class="btn" id="plotStemsBtn">Plot stems</button>' : ''}
       <button class="btn warn" id="deleteFeatureBtn">Delete</button>
       <button class="btn primary" id="doneFeatureBtn">Done</button>
     </div>
@@ -2624,7 +2594,7 @@ function startStemPlotterForSelectedFeature(){
   const feature=getFeatureById(state.selectedFeatureId);
   if(!feature) return;
   const pr=feature.properties||{};
-  if(!['G','W'].includes(String(pr.feature_type||'').toUpperCase())){ showNotice('Stem plotter is for groups and woodland only.'); return; }
+  if(String(pr.feature_type||'').toUpperCase()!=='G'){ showNotice('Stem plotter is for groups only.'); return; }
   closeSheets();
   state.stemPlotter={parent_feature_id:feature.id,parent_id:pr.tree_id||feature.id};
   updateStemPlotterUi();
@@ -2644,7 +2614,7 @@ async function addGpsStemPoint(){
   if(!state.stemPlotter) return;
   if(!state.currentGpsLatLng){ showGps('Waiting for GPS fix…'); return; }
   await addStemPointAtLatLng(state.currentGpsLatLng);
-  showGps('Stem point added from GPS.');
+  showGps('Group stem point added from GPS.');
 }
 async function undoLastStemPoint(){
   const p=ensureProject(); const sp=state.stemPlotter; if(!p||!sp) return;
@@ -2652,13 +2622,13 @@ async function undoLastStemPoint(){
   for(let i=list.length-1;i>=0;i--){
     if(String(list[i].parent_id||'')===String(sp.parent_id)){ list.splice(i,1); break; }
   }
-  await saveCurrentProject(); rebuildMap(); updateStemPlotterUi(); showNotice('Last stem point removed.');
+  await saveCurrentProject(); rebuildMap(); updateStemPlotterUi(); showNotice('Last group stem point removed.');
 }
 async function clearStemPointsForActiveGroup(){
   const p=ensureProject(); const sp=state.stemPlotter; if(!p||!sp) return;
-  if(!confirm('Clear all stem points for this feature?')) return;
+  if(!confirm('Clear all stem points for this group?')) return;
   p.group_stem_points=groupStemPoints(p).filter(s=>String(s.parent_id||'')!==String(sp.parent_id));
-  await saveCurrentProject(); rebuildMap(); updateStemPlotterUi(); showNotice('Stem points cleared.');
+  await saveCurrentProject(); rebuildMap(); updateStemPlotterUi(); showNotice('Group stem points cleared.');
 }
 function finishStemPlotter(){
   state.stemPlotter=null;
@@ -4063,17 +4033,9 @@ async function compressImageFile(file, maxDim=1600, quality=0.82){
   });
 }
 
-function budSurveyExportFeatureCollection(project){
-  return {type:'FeatureCollection', name:project.name, features:(project.features||[]).map(f=>{
-    if(!isSafetyMode(project)) return f;
-    const props=Object.assign({},f.properties||{});
-    delete props.rpa_radius;
-    return Object.assign({},f,{properties:props});
-  })};
-}
 function exportGeoJSON(){
   const p=ensureProject(); if(!p) return;
-  const fc=budSurveyExportFeatureCollection(p);
+  const fc={type:'FeatureCollection', name:p.name, features:p.features};
   downloadText(`${slugify(p.name)}_survey.geojson`, JSON.stringify(fc,null,2), 'application/geo+json');
 }
 
@@ -4083,7 +4045,7 @@ function budExportPhotoNames(props){return Array.isArray(props.photos)?props.pho
 function budAllExportHeaders(project){
   const schemaKeys=(project&&Array.isArray(project.schema)?project.schema:defaultSchema).map(f=>f.key).filter(Boolean);
   const extras=['rpa_radius','effective_dbh_mm','lat','lon','geometry_type','wkt','photo_count','photo_names'];
-  return Array.from(new Set(schemaKeys.concat(extras))).filter(key=>!isSafetyMode(project)||key!=='rpa_radius');
+  return Array.from(new Set(schemaKeys.concat(extras)));
 }
 function budExportValue(feature,key){
   const props=feature.properties||{};
@@ -4094,7 +4056,6 @@ function budExportValue(feature,key){
   if(key==='wkt') return budGeomToWkt ? budGeomToWkt(feature.geometry) : '';
   if(key==='photo_count') return budExportPhotoCount(props);
   if(key==='photo_names') return budExportPhotoNames(props);
-  if(key==='photos') return budExportPhotoNames(props);
   if(key==='effective_dbh_mm'){
     const eff=effectiveDbhMm(props);
     return Number.isFinite(eff)?Math.round(eff):'';
@@ -4205,7 +4166,7 @@ async function budCollectProjectZipEntries(p){
     {name:`${slug}.bud`, blob:new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})},
     {name:'README.txt', blob:new Blob([budProjectReadmeText(p)],{type:'text/plain'})},
     {name:`exports/${slug}_tree_survey.csv`, blob:new Blob([budScheduleCsvText(p)],{type:'text/csv'})},
-    {name:`exports/${slug}_tree_survey.geojson`, blob:new Blob([JSON.stringify(Object.assign({},payload.survey_geojson,{features:budSurveyExportFeatureCollection(p).features}),null,2)],{type:'application/geo+json'})},
+    {name:`exports/${slug}_tree_survey.geojson`, blob:new Blob([JSON.stringify(payload.survey_geojson,null,2)],{type:'application/geo+json'})},
     {name:`exports/${slug}_tree_survey.kml`, blob:new Blob([buildTreeSurveyKml(p)],{type:'application/vnd.google-earth.kml+xml'})},
     {name:`exports/${slug}_bud_project_package.json`, blob:new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})},
     {name:`backups/${stamp}_${slug}.bud`, blob:new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})}
@@ -4444,9 +4405,31 @@ async function importProjectJsonFile(file){
   let json;
   try{ json=JSON.parse(text); }catch(e){ alert('Could not read project JSON.'); return; }
 
-  // bundled dashboard package support
+  // A .bud chosen through Open project file may be either the live project or
+  // a timestamped file from backups/. If it matches a project already on this
+  // device, treat it as a restore and protect the current state first.
   if(json && (json.project_json || json.site_geojson || json.survey_geojson)){
-    await importDashboardPackageObject(json, file.name.replace(/\.(bud|json|budleaf)$/i,''));
+    const sourceName=file.name.replace(/\.(bud|json|budleaf)$/i,'');
+    const packageName=String(
+      (json.project_json&&json.project_json.project&&(json.project_json.project.project_name||json.project_json.project.name)) ||
+      (json.project&&json.project.name) || sourceName || 'Imported Project'
+    );
+    const existing=(state.projects||[]).find(p=>
+      (json.project_id && p.id===json.project_id) || projectNameKey(p.name)===projectNameKey(packageName)
+    ) || null;
+
+    if(existing){
+      const when=json.saved_at ? new Date(json.saved_at).toLocaleString() : 'the selected file';
+      if(!confirm(`Restore ${existing.name} from ${when}?\n\nBud&Leaf will save the current version to backups first.`)) return;
+      state.currentProjectId=existing.id;
+      try{ await writeBudProjectSnapshot(existing,'pre-restore',true); }catch(err){ console.warn('Pre-restore backup failed.',err); }
+      await importDashboardPackageObject(json,sourceName,existing);
+      try{ await syncBudLiveProjectFile({writePhotos:true,allowSnapshot:false}); }catch(err){ console.warn('Restored project could not update linked folder.',err); }
+      showNotice('Previous project version restored.');
+      return;
+    }
+
+    await importDashboardPackageObject(json,sourceName);
     return;
   }
 
@@ -4595,7 +4578,7 @@ async function ensureBudProjectSubfolders(dir){
 }
 function budScheduleCsvText(p){
   const headers = isSafetyMode(p)
-    ? ['tree_id','feature_type','species','age','stem_diameter','est_height','canopy_n','canopy_e','canopy_s','canopy_w','physiological_condition','structural_condition','condition_comments','target_type','target_occupancy','defects','recommendation','work_spec','timing','priority','tpo_application_required','safety_comments','notes','x','y']
+    ? ['tree_id','feature_type','species','age','stem_diameter','est_height','canopy_n','canopy_e','canopy_s','canopy_w','rpa_radius','physiological_condition','structural_condition','condition_comments','target_type','target_occupancy','defects','recommendation','work_spec','timing','priority','tpo_application_required','safety_comments','notes','x','y']
     : ['tree_id','feature_type','species','age','category','stem_diameter','est_height','canopy_n','canopy_e','canopy_s','canopy_w','rpa_radius','first_branch_n','first_branch_e','first_branch_s','first_branch_w','canopy_clearance','physiological_condition','structural_condition','condition_comments','preliminary_management','remaining_years','notes','x','y'];
   return [headers.join(',')].concat((p.features||[]).map(f=>headers.map(h=>csvCell(f.properties[h]??'')).join(','))).join('\n');
 }
@@ -4639,6 +4622,74 @@ async function exportBudPhotosToFolder(photosDir,p){
   }
   return count;
 }
+async function budPruneProjectBackups(backupsDir,keep=BUD_PROJECT_SNAPSHOT_KEEP){
+  if(!backupsDir || typeof backupsDir.entries!=='function') return;
+  try{
+    const names=[];
+    for await (const [name,handle] of backupsDir.entries()){
+      if(handle && handle.kind==='file' && /\.bud$/i.test(name)) names.push(name);
+    }
+    names.sort();
+    while(names.length>keep){
+      const oldest=names.shift();
+      try{ await backupsDir.removeEntry(oldest); }catch(e){}
+    }
+  }catch(err){ console.warn('Could not prune project backups.',err); }
+}
+function budSnapshotDue(project){
+  const last=Date.parse(project&&project.linked_folder_last_snapshot||'');
+  return !Number.isFinite(last) || (Date.now()-last)>=BUD_PROJECT_SNAPSHOT_INTERVAL_MS;
+}
+async function writeBudProjectSnapshot(project,reason='auto',force=false){
+  const p=project||currentProject();
+  if(!p || !p._linkedProjectFolderHandle) return false;
+  if(!force && !budSnapshotDue(p)) return false;
+  const dir=p._linkedProjectFolderHandle;
+  try{
+    if((await dir.queryPermission({mode:'readwrite'}))!=='granted') return false;
+  }catch(e){ return false; }
+  const payload=currentBudProjectPackage();
+  if(!payload) return false;
+  payload.snapshot_reason=reason;
+  const {backupsDir}=await ensureBudProjectSubfolders(dir);
+  const stamp=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  const slug=budProjectFileBase(p);
+  await budWriteText(backupsDir,`${stamp}_${slug}.bud`,JSON.stringify(payload,null,2));
+  p.linked_folder_last_snapshot=nowIso();
+  await putProjectDb(p);
+  await budPruneProjectBackups(backupsDir);
+  return true;
+}
+async function syncBudLiveProjectFile(opts={}){
+  const p=currentProject(); if(!p || !p._linkedProjectFolderHandle) return false;
+  if(budLiveSyncInProgress) return false;
+  const dir=p._linkedProjectFolderHandle;
+  let permission=false;
+  try{ permission=(await dir.queryPermission({mode:'readwrite'}))==='granted'; }catch(e){}
+  if(!permission) throw new Error('Linked project folder permission is not available.');
+
+  budLiveSyncInProgress=true;
+  try{
+    const payload=currentBudProjectPackage(); if(!payload) return false;
+    const slug=budProjectFileBase(p);
+    const subfolders=await ensureBudProjectSubfolders(dir);
+
+    // The live .bud is written first on every save so clearing browser storage
+    // can never reveal an older survey shell. Photos are additionally flushed
+    // to photos/ when the caller says they changed.
+    await budWriteText(dir,`${slug}.bud`,JSON.stringify(payload,null,2));
+    if(opts.writePhotos) await exportBudPhotosToFolder(subfolders.photosDir,p);
+
+    p.linked_folder_last_sync=nowIso();
+    await putProjectDb(p);
+    if(opts.allowSnapshot!==false) await writeBudProjectSnapshot(p,'auto-15min',false);
+    updateProjectFileSafetyUi();
+    return true;
+  }finally{
+    budLiveSyncInProgress=false;
+  }
+}
+
 async function syncBudToFolder(opts={}){
   const p=ensureProject(); if(!p) return;
   const dir=await ensureProjectFolderHandle(p,true);
@@ -4646,36 +4697,41 @@ async function syncBudToFolder(opts={}){
   if(!(await budVerifyPermission(dir,true))){ alert('Bud&Leaf does not have permission to write to this folder.'); return; }
   const payload=currentBudProjectPackage(); if(!payload) return;
   const slug=budProjectFileBase(p);
-  const stamp=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
-  const {exportsDir,photosDir,backupsDir}=await ensureBudProjectSubfolders(dir);
+  const {exportsDir,photosDir}=await ensureBudProjectSubfolders(dir);
 
-  await budWriteText(dir,`${slug}.bud`,JSON.stringify(payload,null,2));
-  await budWriteText(backupsDir,`${stamp}_${slug}.bud`,JSON.stringify(payload,null,2));
+  // Full manual Sync refreshes the durable project, photos and exports.
+  // The regular autosave path only needs the live .bud plus timed snapshots.
+  budLiveSyncInProgress=true;
+  try{
+    await budWriteText(dir,`${slug}.bud`,JSON.stringify(payload,null,2));
+    await budWriteText(exportsDir,`${slug}_tree_survey.csv`,budScheduleCsvText(p),'text/csv');
+    await budWriteText(exportsDir,`${slug}_tree_survey.geojson`,JSON.stringify(Object.assign({},payload.survey_geojson,{features:budSurveyExportFeatureCollection(p).features}),null,2),'application/geo+json');
+    await budWriteText(exportsDir,`${slug}_tree_survey.kml`,buildTreeSurveyKml(p),'application/vnd.google-earth.kml+xml');
+    await budWriteText(exportsDir,`${slug}_bud_project_package.json`,JSON.stringify(payload,null,2),'application/json');
+    const photoCount=await exportBudPhotosToFolder(photosDir,p);
 
-  await budWriteText(exportsDir,`${slug}_tree_survey.csv`,budScheduleCsvText(p),'text/csv');
-  await budWriteText(exportsDir,`${slug}_tree_survey.geojson`,JSON.stringify(Object.assign({},payload.survey_geojson,{features:budSurveyExportFeatureCollection(p).features}),null,2),'application/geo+json');
-  await budWriteText(exportsDir,`${slug}_tree_survey.kml`,buildTreeSurveyKml(p),'application/vnd.google-earth.kml+xml');
-  await budWriteText(exportsDir,`${slug}_bud_project_package.json`,JSON.stringify(payload,null,2),'application/json');
-  const photoCount=await exportBudPhotosToFolder(photosDir,p);
-
-  p.linked_folder_last_sync=nowIso();
-  await saveCurrentProject(true);
-  renderCurrentProjectSummary();
-  updateProjectFileSafetyUi();
-  if(!opts.quiet){
-    showNotice(`Synced to linked project folder${photoCount?` with ${photoCount} photo(s).`:'.'}`);
+    p.linked_folder_last_sync=nowIso();
+    await putProjectDb(p);
+    await writeBudProjectSnapshot(p,'manual-sync',true);
+    renderCurrentProjectSummary();
+    updateProjectFileSafetyUi();
+    if(!opts.quiet){
+      showNotice(`Synced to linked project folder${photoCount?` with ${photoCount} photo(s).`:'.'}`);
+    }
+  }finally{
+    budLiveSyncInProgress=false;
   }
 }
 async function syncBudToLinkedFolderIfAvailable(successMessage){
   const p=currentProject();
   if(!p || !p._linkedProjectFolderHandle) return false;
   try{
-    await syncBudToFolder({quiet:true});
+    await syncBudLiveProjectFile({writePhotos:true,allowSnapshot:true});
     if(successMessage) showNotice(successMessage);
     return true;
   }catch(err){
     console.warn('Linked folder sync failed.', err);
-    showNotice('Saved inside Bud&Leaf, but the linked project folder did not update. Use Sync project folder before leaving site.');
+    showNotice('Saved on this device, but the linked project file did not update. Reconnect the Projects folder.');
     return false;
   }
 }
@@ -4909,7 +4965,6 @@ function budFeatureExportProps(feature, layerName){
 function budRpaFeatureCollection(){
   const p=ensureProject(); if(!p)return null;
   const feats=[];
-  if(isSafetyMode(p)) return {type:'FeatureCollection',features:feats};
   (p.features||[]).forEach(f=>{
     const g=f.geometry||{};
     let rpa=null;
@@ -4925,7 +4980,7 @@ function budRpaFeatureCollection(){
 function budGisProjectFeatureCollection(){
   const p=ensureProject(); if(!p)return null;
   const features=[];
-  budSurveyExportFeatureCollection(p).features.forEach(f=>features.push({type:'Feature',id:f.id,geometry:f.geometry,properties:budFeatureExportProps(f,'survey')}));
+  (p.features||[]).forEach(f=>features.push({type:'Feature',id:f.id,geometry:f.geometry,properties:budFeatureExportProps(f,'survey')}));
   const rpaFc=budRpaFeatureCollection();
   (rpaFc.features||[]).forEach(f=>features.push(f));
   groupStemPoints(p).forEach((s,i)=>features.push({type:'Feature',id:s.id||('group_stem_'+(i+1)),geometry:s.geometry,properties:Object.assign({},s.properties||{},{layer:'group_stem_points',parent_id:s.parent_id||'',stem_id:s.stem_id||'',wkt:budGeomToWkt(s.geometry)})}));
@@ -5462,18 +5517,8 @@ function budAnchorDownloadBlob(blob, filename){
   },5000);
 }
 
-function budPdfPriorityRgb(props){
-  const hex=safetyPriorityColor(props).slice(1);
-  return [0,2,4].map(i=>parseInt(hex.slice(i,i+2),16)/255);
-}
-function budPdfFeatureColours(props, safety){
-  if(!safety) return '0.90 0.96 0.92 rg 0.18 0.37 0.27 RG';
-  const rgb=budPdfPriorityRgb(props);
-  return rgb.map(v=>budPdfNum(0.80+v*0.20)).join(' ')+' rg '+rgb.map(budPdfNum).join(' ')+' RG';
-}
 function exportTreeLocationPdf(){
   const p=ensureProject(); if(!p) return;
-  const safety=isSafetyMode(p);
   const features=(p.features||[]).filter(f=>f&&f.geometry);
   const planFeatures=features.filter(f=>{
     const t=String((f.properties&&f.properties.feature_type)||'').toUpperCase();
@@ -5548,7 +5593,7 @@ function exportTreeLocationPdf(){
     if(['G','H','W'].includes(t)&&['Polygon','MultiPolygon'].includes(f.geometry.type)){
       const path=budPdfGeomPath(f.geometry,project);
       if(path){
-        c+='q '+budPdfFeatureColours(f.properties,safety)+' 1.2 w\n'+path+'B\nQ\n';
+        c+='q 0.90 0.96 0.92 rg 0.18 0.37 0.27 RG 1.2 w\n'+path+'B\nQ\n';
         const centre=budPdfCentre(f.geometry,project);
         c+=budPdfTextCmd(budSafetyPlanFeatureId(f),centre[0]-7,centre[1]+3,10,'bold');
       }
@@ -5559,7 +5604,7 @@ function exportTreeLocationPdf(){
   individualCanopyFeatures.forEach(canopy=>{
     const path=budPdfGeomPath(canopy.geometry,project);
     if(path){
-      c+='q '+budPdfFeatureColours(canopy.properties,safety)+' 0.9 w\n'+path+'B\nQ\n';
+      c+='q 0.90 0.96 0.92 rg 0.18 0.37 0.27 RG 0.9 w\n'+path+'B\nQ\n';
     }
   });
 
@@ -5568,8 +5613,7 @@ function exportTreeLocationPdf(){
     const t=String((f.properties&&f.properties.feature_type)||'').toUpperCase();
     if((t==='T'||!['G','H','W'].includes(t)) && f.geometry.type==='Point'&&Array.isArray(f.geometry.coordinates)){
       const pt=project(f.geometry.coordinates);
-      const pointRgb=safety?budPdfPriorityRgb(f.properties).map(budPdfNum).join(' '):'0.09 0.14 0.12';
-      c+='q '+pointRgb+' rg 1 1 1 RG 1 w\n'+budPdfCircle(pt[0],pt[1],4)+'B\nQ\n';
+      c+='q 0.09 0.14 0.12 rg 1 1 1 RG 1 w\n'+budPdfCircle(pt[0],pt[1],4)+'B\nQ\n';
       c+=budPdfTextCmd(budSafetyPlanFeatureId(f),pt[0]+7,pt[1]+5,10,'bold');
     }
   });
@@ -5585,14 +5629,7 @@ function exportTreeLocationPdf(){
   c+='0.90 0.96 0.92 rg 0.18 0.37 0.27 RG 1 w '+budPdfNum(margin+94)+' '+budPdfNum(fy-4)+' 12 8 re B\n';
   c+=budPdfTextCmd('Canopy / group / hedge / woodland polygon',margin+111,fy-3,7,'normal');
   c+='q 1 0.97 0.97 rg 0.74 0.16 0.14 RG 1 w [3 2] 0 d '+budPdfNum(margin+255)+' '+budPdfNum(fy-4)+' 12 8 re B Q\n';
-  c+=budPdfTextCmd(safety?'Survey extents':'Red line boundary',margin+272,fy-3,7,'normal');
-  if(safety){
-    ['Urgent','High','Moderate','Low','No action','Unspecified'].forEach((priority,i)=>{
-      const x=margin+i*83;
-      c+=budPdfPriorityRgb({priority}).map(budPdfNum).join(' ')+' rg '+budPdfNum(x)+' 49 9 7 re f\n';
-      c+=budPdfTextCmd(priority,x+13,49,7,'normal');
-    });
-  }
+  c+=budPdfTextCmd('Red line boundary',margin+272,fy-3,7,'normal');
   c+=budPdfTextCmd('Indicative tree location plan. Not a measured topographical plan or BS5837 constraints plan.',margin,38,7,'normal');
 
   const streamBytes=new TextEncoder().encode(c).length;
@@ -5722,4 +5759,3 @@ boot().catch(err=>{ console.error(err); alert('App failed to start: '+(err && er
 </script>
 </body>
 </html>
-
