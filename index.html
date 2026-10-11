@@ -1516,12 +1516,20 @@ function deleteProjectDb(id){
   }
   return writeDb(store=>store.delete(id));
 }
-function clearProjectsDb(){
+async function clearProjectsDb(){
+  // Clear survey projects, but keep Bud&Leaf settings such as the persisted
+  // Projects-folder handle. Clearing projects must not silently break the
+  // durable linked-folder save path.
   if(usingFallbackDb()){
     fallbackProjectsWrite([]);
-    return Promise.resolve();
+    return;
   }
-  return writeDb(store=>store.clear());
+  const projects=await listProjectsDb();
+  await writeDb(store=>{
+    for(const project of projects){
+      if(project && project.id && project.id!==BUD_SETTINGS_ID) store.delete(project.id);
+    }
+  });
 }
 
 function blankProject(name){
@@ -4400,6 +4408,32 @@ async function importDashboardPackageObject(pkg,sourceName,existingProject=null)
   showNotice(`Project restored. Boundary: ${redCount}. Topo: ${topoCount}. Survey features: ${(project.features||[]).length}. Group stems: ${(project.group_stem_points||[]).length}.`);
 }
 
+async function linkImportedProjectToCanonicalFolder(project){
+  const p=project||currentProject();
+  if(!p) return false;
+  try{
+    const dir=await ensureProjectFolderHandle(p,true);
+    if(!dir){
+      updateProjectFileSafetyUi();
+      showNotice('Project opened. Reconnect the Bud&Leaf Projects folder before survey work.');
+      return false;
+    }
+    // The selected .bud may have come from Downloads, email or backups. File
+    // inputs do not grant write access to the selected file's parent folder,
+    // so Bud&Leaf reconnects the canonical project folder and immediately
+    // writes the imported state there as the live project.
+    await putProjectDb(p);
+    await syncBudLiveProjectFile({writePhotos:true,allowSnapshot:false});
+    updateProjectFileSafetyUi();
+    return true;
+  }catch(err){
+    console.warn('Imported project could not be linked to its project folder.',err);
+    updateProjectFileSafetyUi();
+    showNotice('Project opened on this device. Reconnect the Bud&Leaf Projects folder before survey work.');
+    return false;
+  }
+}
+
 async function importProjectJsonFile(file){
   const text=await file.text();
   let json;
@@ -4424,12 +4458,13 @@ async function importProjectJsonFile(file){
       state.currentProjectId=existing.id;
       try{ await writeBudProjectSnapshot(existing,'pre-restore',true); }catch(err){ console.warn('Pre-restore backup failed.',err); }
       await importDashboardPackageObject(json,sourceName,existing);
-      try{ await syncBudLiveProjectFile({writePhotos:true,allowSnapshot:false}); }catch(err){ console.warn('Restored project could not update linked folder.',err); }
+      await linkImportedProjectToCanonicalFolder(currentProject());
       showNotice('Previous project version restored.');
       return;
     }
 
     await importDashboardPackageObject(json,sourceName);
+    await linkImportedProjectToCanonicalFolder(currentProject());
     return;
   }
 
@@ -4442,6 +4477,7 @@ async function importProjectJsonFile(file){
     fitMapToProject();
     renderCurrentProjectSummary();
     afterProjectOpenedUi();
+    await linkImportedProjectToCanonicalFolder(currentProject());
     showNotice('Project file restored.');
     return;
   }
