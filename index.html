@@ -2838,12 +2838,14 @@ function renderGroupStemPoints(){
   state.groupStemLayer.addTo(state.map);
 }
 
-function buildDefaults(featureType, category, latlng){
+function buildDefaults(featureType, category, latlng, projectOverride=null){
+  const project=projectOverride||currentProject();
+  const schema=(project&&Array.isArray(project.schema))?project.schema:defaultSchema;
   const p={};
-  currentProject().schema.forEach(f=>p[f.key]='');
+  schema.forEach(f=>p[f.key]='');
   p.feature_type=featureType;
-  p.category=isSafetyMode() ? '' : (category==='U' ? 'U' : `${category}1`);
-  p.tree_id=nextTreeId(currentProject(), featureType);
+  p.category=isSafetyMode(project) ? '' : (category==='U' ? 'U' : `${category}1`);
+  p.tree_id=nextTreeId(project, featureType);
   p.species='';
   p.age='';
   const defaultCondition=['G','H','W'].includes(featureType) ? 'Good - Good' : 'Good';
@@ -4507,7 +4509,7 @@ function normalizeGeoJsonCollection(data){
 function convertDashboardSurveyFeature(src, project){
   const geom = src.geometry || src;
   const props = normalizeImportedProperties(src.properties || {});
-  const mapped = recomputeProps(Object.assign(buildDefaults((props.feature_type)||guessTypeFromGeometry(geom),(props.category)||'C', null), props));
+  const mapped = recomputeProps(Object.assign(buildDefaults((props.feature_type)||guessTypeFromGeometry(geom),(props.category)||'C', null, project), props));
   if(!Array.isArray(mapped.photos)) mapped.photos = [];
   const featureId = props.uid || src.id || uid();
   const feature = {type:'Feature', id:featureId, geometry:geom, properties:mapped};
