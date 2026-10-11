@@ -636,7 +636,7 @@ label.btn,
       <summary>Quick start</summary>
       <div class="details-body">
         <ol class="quick-start-list">
-          <li>Tap <strong>New project</strong> or <strong>Open existing</strong>.</li>
+          <li>Tap <strong>New project</strong> or <strong>Open existing</strong>. Use <strong>Recover projects</strong> only if the local project list has been cleared.</li>
           <li>For a new project, enter the project name, survey type and location.</li>
           <li>Confirm the location, then create the project.</li>
           <li>Open the field map and add trees, groups, hedges or woodland.</li>
@@ -657,9 +657,25 @@ label.btn,
           <div class="project-entry-actions start-actions">
             <button id="setupStartNewProjectBtn" class="btn primary full" type="button">New project</button>
             <button id="setupOpenExistingProjectBtn" class="btn full" type="button">Open existing</button>
-            <label class="btn filebtn full">Open project file<input id="importProjectJsonInput" type="file" accept=".bud,.budleaf,.json" /></label>
+            <button id="recoverProjectsBtn" class="btn full" type="button">Recover projects</button>
           </div>
           <button id="chooseBudRootBtn" class="btn full" type="button">Create Projects Folder</button>
+
+          <details id="recoverProjectDetails" class="clean-details hidden">
+            <summary>Projects found in Bud&amp;Leaf Projects</summary>
+            <div class="details-body">
+              <div class="clean-muted">Choose the live project copy. No Android file browsing needed.</div>
+              <div id="recoverProjectList" class="project-list compact-project-list"></div>
+            </div>
+          </details>
+
+          <details id="recoveryImportDetails" class="clean-details">
+            <summary>Restore / import project file</summary>
+            <div class="details-body">
+              <div class="clean-muted" style="margin-bottom:8px">Use this only for a .bud file from Downloads, email, another device or a manual backup.</div>
+              <label class="btn filebtn full">Choose project file<input id="importProjectJsonInput" type="file" accept=".bud,.budleaf,.json" /></label>
+            </div>
+          </details>
 
           <div id="newProjectSetupPanel" class="setup-flow-card hidden" aria-hidden="true">
             <h3 class="clean-subtitle">New project setup</h3>
@@ -743,9 +759,11 @@ label.btn,
               <div class="row" style="margin-top:10px">
                 <button id="linkProjectFolderBtn" class="btn">Reconnect Bud&Leaf Projects folder</button>
                 <button id="syncFromFolderBtn" class="btn hidden" type="button">Open from linked folder</button>
+                <button id="projectVersionsBtn" class="btn" type="button">Previous versions</button>
               </div>
               <div class="clean-muted" id="projectFolderStatus" style="margin-top:8px">Bud&Leaf Projects folder: not connected.</div>
               <div id="projectFilesList" class="clean-muted hidden" style="margin-top:10px"></div>
+              <div id="projectVersionsList" class="project-list compact-project-list hidden" style="margin-top:10px"></div>
             </div>
           </details>
 
@@ -1636,7 +1654,7 @@ function showBudHomeTab(name){
 function renderSetupStatus(){
   const box=$('setupStatusBox'); if(!box) return;
   const p=currentProject();
-  if(!p){box.textContent='No project selected. Choose New project, Open existing, or Open project file.'; updateProjectDashboardVisibility(); return;}
+  if(!p){box.textContent='No project selected. Choose New project, Open existing, or Recover projects.'; updateProjectDashboardVisibility(); return;}
   const meta=p.project_meta||{}, sc=meta.site_centre||{};
   const centre=(Number.isFinite(Number(sc.lat))&&Number.isFinite(Number(sc.lon)))?`${Number(sc.lat).toFixed(6)}, ${Number(sc.lon).toFixed(6)}`:'—';
   const rlb=normalizeGeoJsonCollection(p.red_line_boundary);
@@ -1676,7 +1694,7 @@ function updateProjectDashboardVisibility(){
   const has=!!currentProject();
   document.querySelectorAll('.project-only').forEach(el=>el.classList.toggle('hidden',!has));
   const box=$('setupStatusBox');
-  if(box && !has) box.textContent='No project selected. Choose New project, Open existing, or Open project file.';
+  if(box && !has) box.textContent='No project selected. Choose New project, Open existing, or Recover projects.';
 }
 function afterProjectOpenedUi(){
   showNewProjectSetup(false);
@@ -1698,8 +1716,169 @@ function openExistingProjectPanel(){
     try{ details.scrollIntoView({behavior:'smooth', block:'start'}); }catch(e){ details.scrollIntoView(); }
   }
   const active=(state.projects||[]).filter(p=>!p.archived);
-  showNotice(active.length ? 'Choose a saved project from the list.' : 'No saved projects found. Use Open project file if you have a .bud file.');
+  showNotice(active.length ? 'Choose a saved project from the list.' : 'No saved projects on this device. Use Recover projects to load them from your Bud&Leaf Projects folder.');
 }
+
+
+let budRecoveryCandidates=[];
+let budVersionCandidates=[];
+
+function budPackageProjectName(pkg,fallback='Project'){
+  const pj=(pkg&&pkg.project_json)||{};
+  return String(
+    (pj.project&&(pj.project.project_name||pj.project.name)) ||
+    (pkg&&pkg.project&&pkg.project.name) ||
+    fallback || 'Project'
+  ).replace(/\.(bud|budleaf|json)$/i,'') || 'Project';
+}
+function budPackageFeatureCount(pkg){
+  const fc=pkg&&pkg.survey_geojson;
+  return fc&&Array.isArray(fc.features)?fc.features.length:0;
+}
+function budPackageSavedLabel(pkg,file){
+  const raw=(pkg&&pkg.saved_at) || (file&&file.lastModified?new Date(file.lastModified).toISOString():'');
+  if(!raw) return 'date unknown';
+  const d=new Date(raw);
+  return Number.isFinite(d.getTime()) ? d.toLocaleString() : String(raw).replace('T',' ').slice(0,16);
+}
+async function recoverProjectsFromRoot(){
+  const details=$('recoverProjectDetails');
+  const list=$('recoverProjectList');
+  if(list) list.innerHTML='<div class="clean-muted">Looking for project files…</div>';
+  if(details){ details.classList.remove('hidden'); details.open=true; }
+  const root=await getBudProjectsRootForWrite();
+  if(!root){
+    if(list) list.innerHTML='<div class="clean-muted">Bud&Leaf Projects folder is not connected.</div>';
+    return;
+  }
+  const found=[];
+  try{
+    for await (const [folderName,handle] of root.entries()){
+      if(!handle || handle.kind!=='directory') continue;
+      const budFiles=[];
+      try{
+        for await (const [fileName,fileHandle] of handle.entries()){
+          if(fileHandle && fileHandle.kind==='file' && /\.bud$/i.test(fileName)) budFiles.push([fileName,fileHandle]);
+        }
+      }catch(e){ continue; }
+      if(!budFiles.length) continue;
+      const exactName=budProjectFolderName(folderName)+'.bud';
+      budFiles.sort((a,b)=>{
+        const ae=a[0].toLowerCase()===exactName.toLowerCase()?0:1;
+        const be=b[0].toLowerCase()===exactName.toLowerCase()?0:1;
+        return ae-be || a[0].localeCompare(b[0]);
+      });
+      const [fileName,fileHandle]=budFiles[0];
+      try{
+        const file=await fileHandle.getFile();
+        const pkg=JSON.parse(await file.text());
+        if(!(pkg && (pkg.project_json || pkg.survey_geojson || (pkg.id&&Array.isArray(pkg.features))))) continue;
+        found.push({root,dir:handle,folderName,fileName,fileHandle,file,pkg,projectName:budPackageProjectName(pkg,folderName)});
+      }catch(err){ console.warn('Could not read project during recovery scan',folderName,err); }
+    }
+  }catch(err){
+    console.warn('Could not scan Bud&Leaf Projects folder',err);
+    if(list) list.innerHTML='<div class="clean-muted">Could not scan the Projects folder. Reconnect it and try again.</div>';
+    return;
+  }
+  found.sort((a,b)=>a.projectName.localeCompare(b.projectName));
+  budRecoveryCandidates=found;
+  if(!list) return;
+  if(!found.length){
+    list.innerHTML='<div class="clean-muted">No live .bud project files were found in this Projects folder.</div>';
+    return;
+  }
+  list.innerHTML=found.map((c,i)=>`<div class="project-item"><div class="project-meta"><div class="project-title">${escapeHtml(c.projectName)}</div><div class="muted">${budPackageFeatureCount(c.pkg)} feature(s) · saved ${escapeHtml(budPackageSavedLabel(c.pkg,c.file))}</div><div class="muted">${escapeHtml(c.folderName)} / ${escapeHtml(c.fileName)}</div></div><div class="project-actions"><button class="btn primary" type="button" data-recover-project="${i}">Recover</button></div></div>`).join('');
+  list.querySelectorAll('[data-recover-project]').forEach(btn=>btn.onclick=()=>recoverBudProjectCandidate(Number(btn.dataset.recoverProject)));
+  showNotice(`${found.length} project${found.length===1?'':'s'} found in Bud&Leaf Projects.`);
+}
+async function recoverBudProjectCandidate(index){
+  const c=budRecoveryCandidates[index];
+  if(!c) return;
+  try{
+    let existing=(state.projects||[]).find(p=>
+      (c.pkg.project_id && p.id===c.pkg.project_id) || projectNameKey(p.name)===projectNameKey(c.projectName)
+    ) || null;
+    if(!existing){
+      existing=blankProject(c.projectName);
+      if(c.pkg.project_id) existing.id=String(c.pkg.project_id);
+    }
+    await importDashboardPackageObject(c.pkg,c.fileName,existing);
+    const p=currentProject();
+    if(!p) throw new Error('Recovered project did not become active.');
+    p._linkedProjectFolderHandle=c.dir;
+    p.project_folder_name=c.folderName;
+    p.project_file_base=budProjectFileBase(p);
+    p.linked_folder_name=(state.projectsRootName||c.root.name||'Bud&Leaf Projects')+' / '+c.folderName;
+    p.linked_folder_last_sync=(c.pkg&&c.pkg.saved_at)||p.linked_folder_last_sync||'';
+    await putProjectDb(p);
+    await refreshProjects(p.id);
+    afterProjectOpenedUi();
+    updateProjectFileSafetyUi();
+    const details=$('recoverProjectDetails'); if(details) details.open=false;
+    showNotice(`Recovered ${p.name} from Bud&Leaf Projects.`);
+  }catch(err){
+    console.error('Project recovery failed',err);
+    alert('Could not recover this project. Details: '+(err&&err.message?err.message:err));
+  }
+}
+
+async function showProjectVersions(){
+  const p=ensureProject(); if(!p) return;
+  const box=$('projectVersionsList');
+  if(box){ box.classList.remove('hidden'); box.innerHTML='<div class="clean-muted">Looking for previous versions…</div>'; }
+  let dir=p._linkedProjectFolderHandle;
+  if(!dir) dir=await ensureProjectFolderHandle(p,false);
+  if(!dir){ if(box) box.innerHTML='<div class="clean-muted">Reconnect the project folder first.</div>'; return; }
+  try{
+    if(!(await budVerifyPermission(dir,false))){ if(box) box.innerHTML='<div class="clean-muted">Project folder permission is not available.</div>'; return; }
+    const backupsDir=await dir.getDirectoryHandle('backups',{create:false});
+    const items=[];
+    for await (const [fileName,fileHandle] of backupsDir.entries()){
+      if(!fileHandle || fileHandle.kind!=='file' || !/\.bud$/i.test(fileName)) continue;
+      try{
+        const file=await fileHandle.getFile();
+        const pkg=JSON.parse(await file.text());
+        items.push({dir,backupsDir,fileName,fileHandle,file,pkg,savedAt:(pkg&&pkg.saved_at)||new Date(file.lastModified).toISOString()});
+      }catch(e){}
+    }
+    items.sort((a,b)=>String(b.savedAt||'').localeCompare(String(a.savedAt||'')));
+    budVersionCandidates=items;
+    if(!box) return;
+    if(!items.length){ box.innerHTML='<div class="clean-muted">No previous versions yet.</div>'; return; }
+    box.innerHTML='<div class="clean-muted" style="margin-bottom:6px"><strong>Previous versions</strong> · newest first</div>'+items.map((c,i)=>`<div class="project-item"><div class="project-meta"><div class="project-title">${escapeHtml(budPackageSavedLabel(c.pkg,c.file))}</div><div class="muted">${budPackageFeatureCount(c.pkg)} feature(s)${c.pkg&&c.pkg.snapshot_reason?' · '+escapeHtml(c.pkg.snapshot_reason):''}</div></div><div class="project-actions"><button class="btn" type="button" data-restore-version="${i}">Restore</button></div></div>`).join('');
+    box.querySelectorAll('[data-restore-version]').forEach(btn=>btn.onclick=()=>restoreBudProjectVersion(Number(btn.dataset.restoreVersion)));
+  }catch(err){
+    console.warn('Could not list project versions',err);
+    if(box) box.innerHTML='<div class="clean-muted">No previous versions could be read.</div>';
+  }
+}
+async function restoreBudProjectVersion(index){
+  const c=budVersionCandidates[index];
+  const p=currentProject();
+  if(!c || !p) return;
+  const label=budPackageSavedLabel(c.pkg,c.file);
+  if(!confirm(`Restore ${p.name} to the version saved ${label}?\n\nBud&Leaf will save the current version first.`)) return;
+  try{
+    await writeBudProjectSnapshot(p,'pre-restore',true);
+    await importDashboardPackageObject(c.pkg,c.fileName,p);
+    const restored=currentProject();
+    if(restored){
+      restored._linkedProjectFolderHandle=c.dir;
+      restored.project_folder_name=restored.project_folder_name||budProjectFolderName(restored.name);
+      restored.linked_folder_name=restored.linked_folder_name || ((state.projectsRootName||'Bud&Leaf Projects')+' / '+restored.project_folder_name);
+      await putProjectDb(restored);
+      await syncBudLiveProjectFile({writePhotos:true,allowSnapshot:false});
+      await refreshProjects(restored.id);
+    }
+    showNotice(`Restored ${p.name} to ${label}.`);
+    await showProjectVersions();
+  }catch(err){
+    console.error('Version restore failed',err);
+    alert('Could not restore that version. Details: '+(err&&err.message?err.message:err));
+  }
+}
+
 function projectNameKey(name){ return slugify(name || '').toLowerCase(); }
 function suggestUniqueProjectName(base){
   const clean = String(base || 'Project').trim() || 'Project';
@@ -4447,7 +4626,7 @@ async function importProjectJsonFile(file){
   let json;
   try{ json=JSON.parse(text); }catch(e){ alert('Could not read project JSON.'); return; }
 
-  // A .bud chosen through Open project file may be either the live project or
+  // A .bud chosen through Restore / import project file may be either the live project or
   // a timestamped file from backups/. If it matches a project already on this
   // device, treat it as a restore and protect the current state first.
   if(json && (json.project_json || json.site_geojson || json.survey_geojson)){
@@ -4782,7 +4961,7 @@ async function syncBudToLinkedFolderIfAvailable(successMessage){
 async function syncBudFromFolder(){
   const p=currentProject();
   const dir=p&&p._linkedProjectFolderHandle;
-  if(!dir){ alert('Reconnect Bud&Leaf Projects folder, then use Open project file if needed.'); return; }
+  if(!dir){ alert('Reconnect Bud&Leaf Projects folder, then use Recover projects or Restore / import project file if needed.'); return; }
   if(!(await budVerifyPermission(dir,false))){ alert('Bud&Leaf does not have permission to read this folder.'); return; }
 
   const originalId=p.id;
@@ -5699,6 +5878,7 @@ function wireUi(){
   document.querySelectorAll('[data-bud-home-tab]').forEach(btn=>btn.addEventListener('click',()=>showBudHomeTab(btn.dataset.budHomeTab)));
   if($('setupStartNewProjectBtn')) $('setupStartNewProjectBtn').onclick=beginNewProjectSetup;
   if($('setupOpenExistingProjectBtn')) $('setupOpenExistingProjectBtn').onclick=openExistingProjectPanel;
+  if($('recoverProjectsBtn')) $('recoverProjectsBtn').onclick=recoverProjectsFromRoot;
   if($('chooseBudRootBtn')) $('chooseBudRootBtn').onclick=chooseBudProjectsRoot;
   if($('setupCreateProjectBtn')) $('setupCreateProjectBtn').onclick=createOrSelectSetupProject;
   if($('setupCancelNewProjectBtn')) $('setupCancelNewProjectBtn').onclick=cancelNewProjectSetup;
@@ -5749,6 +5929,7 @@ function wireUi(){
   if($('syncToFolderBtn')) $('syncToFolderBtn').onclick=syncBudToFolder;
   if($('syncFromFolderBtn')) $('syncFromFolderBtn').onclick=syncBudFromFolder;
   if($('viewProjectFilesBtn')) $('viewProjectFilesBtn').onclick=renderProjectFilesList;
+  if($('projectVersionsBtn')) $('projectVersionsBtn').onclick=showProjectVersions;
   if($('shareProjectZipBtn')) $('shareProjectZipBtn').onclick=shareProjectZip;
   if($('addColumnBtn')) $('addColumnBtn').onclick=addBudDataColumn;
   if($('removeColumnBtn')) $('removeColumnBtn').onclick=removeBudDataColumn;
