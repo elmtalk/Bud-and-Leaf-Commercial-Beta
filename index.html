@@ -1803,6 +1803,9 @@ async function recoverBudProjectCandidate(index){
       existing=blankProject(c.projectName);
       if(c.pkg.project_id) existing.id=String(c.pkg.project_id);
     }
+    // Recovery must not depend on whatever project happened to be selected before it.
+    // Make the target explicit before any import/rebuild work starts.
+    state.currentProjectId=existing.id;
     await importDashboardPackageObject(c.pkg,c.fileName,existing);
     const p=currentProject();
     if(!p) throw new Error('Recovered project did not become active.');
@@ -1819,7 +1822,7 @@ async function recoverBudProjectCandidate(index){
     showNotice(`Recovered ${p.name} from Bud&Leaf Projects.`);
   }catch(err){
     console.error('Project recovery failed',err);
-    alert('Could not recover this project. Details: '+(err&&err.message?err.message:err));
+    alert('Could not recover this project (recovery v15). Details: '+(err&&err.message?err.message:err));
   }
 }
 
@@ -2346,9 +2349,9 @@ function syncProjectModeUi(project=currentProject()){
 
 const SAFETY_FIELD_KEYS = new Set(['target_type','target_occupancy','defects','recommendation','work_spec','timing','priority','tpo_application_required','safety_comments']);
 const BS_ONLY_FIELD_KEYS = new Set(['category','first_branch_n','first_branch_e','first_branch_s','first_branch_w','canopy_clearance','remaining_years']);
-function fieldVisibleForMode(field, props){
+function fieldVisibleForMode(field, props, project=currentProject()){
   const key = field.key;
-  if(isSafetyMode()){
+  if(isSafetyMode(project)){
     if(SAFETY_FIELD_KEYS.has(key)) return true;
     if(BS_ONLY_FIELD_KEYS.has(key)) return false;
     return true;
@@ -2356,10 +2359,11 @@ function fieldVisibleForMode(field, props){
   return !SAFETY_FIELD_KEYS.has(key);
 }
 
-function visibleFields(props){
+function visibleFields(props, project=currentProject()){
   const type=props.feature_type;
-  return currentProject().schema.filter(f=>{
-    if(!fieldVisibleForMode(f, props)) return false;
+  const schema=(project&&Array.isArray(project.schema))?project.schema:defaultSchema;
+  return schema.filter(f=>{
+    if(!fieldVisibleForMode(f, props, project)) return false;
     if(f.key==='feature_type') return true;
     if(type==='T') return true;
     if(['G','H','W'].includes(type) && ['first_branch_n','first_branch_e','first_branch_s','first_branch_w'].includes(f.key)) return false;
@@ -2714,10 +2718,12 @@ const DUPLICATE_COPY_KEYS = ['species','feature_type','category','est_height','s
 function duplicateSeedFromFeature(feature){
   const src=(feature&&feature.properties)||{};
   const props={};
-  currentProject().schema.forEach(f=>props[f.key]='');
+  const project=currentProject();
+  const schema=(project&&Array.isArray(project.schema))?project.schema:defaultSchema;
+  schema.forEach(f=>props[f.key]='');
   DUPLICATE_COPY_KEYS.forEach(k=>{ if(src[k]!==undefined) props[k]=src[k]; });
   props.feature_type=src.feature_type||'T';
-  props.tree_id=nextTreeId(currentProject(), props.feature_type);
+  props.tree_id=project?nextTreeId(project, props.feature_type):'';
   props.photos=[];
   return recomputeProps(props);
 }
@@ -4561,6 +4567,7 @@ async function importDashboardPackageObject(pkg,sourceName,existingProject=null)
   project.survey_mode=String(project.survey_mode).toLowerCase().includes('safety')?'Tree Safety':'BS5837';
   project.project_meta.survey_mode=project.survey_mode;
   if(pj.schema&&Array.isArray(pj.schema.fields)) project.schema=buildSchemaFromProjectJson(pj);
+  repairProjectSchema(project);
 
   if(hasSite) project.red_line_boundary=site&&Array.isArray(site.features)&&site.features.length?site:null;
   else if(!existingProject) project.red_line_boundary=null;
